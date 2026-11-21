@@ -37,8 +37,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-
-    # Custom applications
+    'apps.hospitals.apps.HospitalsConfig',
     'accounting.apps.AccountingConfig',
 ]
 
