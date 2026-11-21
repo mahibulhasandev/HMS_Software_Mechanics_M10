@@ -92,4 +92,3 @@ class LedgerSecurityTests(TestCase):
                     cursor.execute(
                         "TRUNCATE TABLE transactions"
                     )
-
