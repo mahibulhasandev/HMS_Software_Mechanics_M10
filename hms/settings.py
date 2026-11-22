@@ -38,7 +38,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'apps.hospitals.apps.HospitalsConfig',
-    'accounting.apps.AccountingConfig',
+    "accounting.apps.AccountingConfig",
     "apps.clinic.apps.ClinicConfig",
 ]
 
