@@ -5,8 +5,7 @@ from contextlib import contextmanager
 from django.db import DatabaseError, connection, transaction
 from django.test import TestCase
 
-from accounting.models import Account
-
+from apps.accounting.models import Account
 
 class RLSSecurityTests(TestCase):
 
