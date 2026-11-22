@@ -2,6 +2,7 @@ import uuid
 from django.db import models
 
 
+# Test categories 
 class TestCategory(models.Model):
     id = models.UUIDField(
         primary_key=True,
@@ -26,6 +27,7 @@ class TestCategory(models.Model):
         return self.name
 
 
+# Diagnostic tests 
 class DiagnosticTest(models.Model):
     id = models.UUIDField(
         primary_key=True,
@@ -59,6 +61,7 @@ class DiagnosticTest(models.Model):
         return f"{self.test_code} - {self.name}"
 
 
+# Test orders 
 class TestOrder(models.Model):
     id = models.UUIDField(
         primary_key=True,
@@ -76,6 +79,7 @@ class TestOrder(models.Model):
         return str(self.id)
 
 
+# Test order items 
 class TestOrderItem(models.Model):
     id = models.UUIDField(
         primary_key=True,
@@ -109,6 +113,7 @@ class TestOrderItem(models.Model):
         return f"{self.id} - {self.status}"
 
 
+# Test results 
 class TestResult(models.Model):
     id = models.UUIDField(
         primary_key=True,
@@ -135,6 +140,7 @@ class TestResult(models.Model):
         return f"{self.parameter_name}: {self.result_value}"
 
 
+# Diagnostic reports 
 class DiagnosticReport(models.Model):
     id = models.UUIDField(
         primary_key=True,
