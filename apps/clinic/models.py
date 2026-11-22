@@ -1,3 +1,4 @@
+
 import uuid
 
 from django.db import models
@@ -36,19 +37,26 @@ class DoctorSchedule(models.Model):
     class Meta:
         db_table = "doctor_schedules"
         ordering = ["weekday", "start_time"]
+
         indexes = [
             models.Index(
                 fields=["hospital", "doctor", "weekday"],
                 name="clinic_doc_sched_idx",
             ),
         ]
+
         constraints = [
             models.CheckConstraint(
-                condition=models.Q(weekday__gte=0, weekday__lte=6),
+                condition=models.Q(
+                    weekday__gte=0,
+                    weekday__lte=6,
+                ),
                 name="clinic_weekday_valid",
             ),
             models.CheckConstraint(
-                condition=models.Q(end_time__gt=models.F("start_time")),
+                condition=models.Q(
+                    end_time__gt=models.F("start_time")
+                ),
                 name="clinic_schedule_time_valid",
             ),
             models.CheckConstraint(
@@ -60,7 +68,9 @@ class DoctorSchedule(models.Model):
                 name="clinic_max_patients_positive",
             ),
             models.CheckConstraint(
-                condition=models.Q(valid_to__gte=models.F("valid_from")),
+                condition=models.Q(
+                    valid_to__gte=models.F("valid_from")
+                ),
                 name="clinic_schedule_date_valid",
             ),
         ]

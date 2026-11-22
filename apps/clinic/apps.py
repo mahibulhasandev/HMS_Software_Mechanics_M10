@@ -2,4 +2,7 @@ from django.apps import AppConfig
 
 
 class ClinicConfig(AppConfig):
-    name = 'clinic'
+    default_auto_field = "django.db.models.BigAutoField"
+    name = "apps.clinic"
+    label = "clinic"
+    verbose_name = "Clinic Department"
