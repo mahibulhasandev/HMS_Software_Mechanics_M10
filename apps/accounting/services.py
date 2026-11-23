@@ -1073,3 +1073,98 @@ def reject_expense(
     )
 
     return expense
+
+# ============================================================
+# EXPENSE PAYMENT AND LEDGER INTEGRATION
+# ============================================================
+
+@transaction.atomic
+def pay_expense(*, expense_id, hospital_id):
+    """
+    Mark an approved expense as paid and create
+    its append-only ledger transaction.
+
+    The caller must verify payment completion,
+    hospital membership, and payment permission.
+    """
+
+    # 1. Lock expense to prevent concurrent processing.
+    expense = (
+        Expense.objects
+        .select_for_update()
+        .get(
+            id=expense_id,
+            hospital_id=hospital_id,
+        )
+    )
+
+    # 2. Only approved expenses can be paid.
+    if expense.status != "approved":
+        raise ValidationError(
+            "Only approved expenses can be paid."
+        )
+
+    if expense.approved_by_hospital_user_id is None:
+        raise ValidationError(
+            "Expense approval information is missing."
+        )
+
+    # 3. Validate amount.
+    if (
+        not expense.amount.is_finite()
+        or expense.amount <= Decimal("0.00")
+    ):
+        raise ValidationError(
+            "Expense amount must be positive."
+        )
+
+    Transaction._meta.get_field("amount").clean(
+        expense.amount, None
+    )
+
+    # 4. Verify the hospital's active account.
+    account = (
+        Account.objects
+        .select_for_update()
+        .get(
+            id=expense.account_id,
+            hospital_id=hospital_id,
+            is_active=True,
+        )
+    )
+
+    # 5. Verify category belongs to the same hospital.
+    category = ExpenseCategory.objects.get(
+        id=expense.expense_category_id,
+        hospital_id=hospital_id,
+    )
+
+    # 6. Prevent duplicate ledger transactions.
+    if Transaction.objects.filter(
+        hospital_id=hospital_id,
+        expense=expense,
+    ).exists():
+        raise ValidationError(
+            "This expense already has a ledger entry."
+        )
+
+    # 7. Update expense status.
+    expense.status = "paid"
+    expense.save(update_fields=["status"])
+
+    # 8. Create append-only ledger entry.
+    ledger_entry = Transaction.objects.create(
+        hospital_id=hospital_id,
+        account=account,
+        expense_category=category,
+        expense=expense,
+        transaction_type="expense",
+        amount=expense.amount,
+        transaction_date=timezone.localdate(),
+        description=(
+            f"Payment for expense: "
+            f"{expense.description}"
+        ),
+    )
+
+    return ledger_entry

@@ -2,6 +2,8 @@
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
+from unittest.mock import patch
+from apps.accounting.services import pay_expense
 
 from django.core.exceptions import ValidationError
 from django.test import TestCase
@@ -512,4 +514,202 @@ class ExpenseCreationTests(TestCase):
         expense.refresh_from_db()
 
         self.assertEqual(expense.status, "pending_approval")
+        self.assertEqual(Transaction.objects.count(), 0)
+
+    # ========================================================
+    # EXPENSE PAYMENT TESTS
+    # ========================================================
+
+    def _create_approved_expense(self):
+        """Prepare an approved expense for payment tests."""
+
+        expense = create_expense(**self.expense_data())
+
+        submit_expense_for_approval(
+            expense_id=expense.id,
+            hospital_id=self.hospital_id,
+        )
+
+        approve_expense(
+            expense_id=expense.id,
+            hospital_id=self.hospital_id,
+            approved_by_hospital_user_id=uuid.uuid4(),
+        )
+
+        return expense
+
+    # 22. Approved expense can be paid.
+    def test_pay_expense_success(self):
+        expense = self._create_approved_expense()
+
+        ledger = pay_expense(
+            expense_id=expense.id,
+            hospital_id=self.hospital_id,
+        )
+
+        expense.refresh_from_db()
+
+        self.assertEqual(expense.status, "paid")
+        self.assertEqual(
+            ledger.transaction_type,
+            "expense",
+        )
+        self.assertEqual(
+            ledger.amount,
+            Decimal("5000.00"),
+        )
+        self.assertEqual(
+            ledger.expense_id,
+            expense.id,
+        )
+        self.assertEqual(
+            ledger.account_id,
+            self.account.id,
+        )
+        self.assertEqual(
+            ledger.expense_category_id,
+            self.category.id,
+        )
+        self.assertEqual(
+            ledger.hospital_id,
+            self.hospital_id,
+        )
+        self.assertEqual(Transaction.objects.count(), 1)
+
+    # 23. Only approved expenses can be paid.
+    def test_pay_invalid_status_rejected(self):
+        expense = create_expense(**self.expense_data())
+
+        for status in [
+            "draft",
+            "pending_approval",
+            "rejected",
+        ]:
+            with self.subTest(status=status):
+                expense.status = status
+                expense.save(update_fields=["status"])
+
+                with self.assertRaises(ValidationError):
+                    pay_expense(
+                        expense_id=expense.id,
+                        hospital_id=self.hospital_id,
+                    )
+
+        self.assertEqual(Transaction.objects.count(), 0)
+
+    # 24. Missing approval information blocks payment.
+    def test_pay_without_approver_rejected(self):
+        expense = self._create_approved_expense()
+
+        expense.approved_by_hospital_user_id = None
+        expense.save(
+            update_fields=["approved_by_hospital_user_id"]
+        )
+
+        with self.assertRaises(ValidationError):
+            pay_expense(
+                expense_id=expense.id,
+                hospital_id=self.hospital_id,
+            )
+
+        expense.refresh_from_db()
+
+        self.assertEqual(expense.status, "approved")
+        self.assertEqual(Transaction.objects.count(), 0)
+
+    # 25. Same expense cannot be paid twice.
+    def test_double_payment_rejected(self):
+        expense = self._create_approved_expense()
+
+        pay_expense(
+            expense_id=expense.id,
+            hospital_id=self.hospital_id,
+        )
+
+        with self.assertRaises(ValidationError):
+            pay_expense(
+                expense_id=expense.id,
+                hospital_id=self.hospital_id,
+            )
+
+        self.assertEqual(Transaction.objects.count(), 1)
+
+    # 26. Existing ledger entry blocks duplicate payment.
+    def test_existing_ledger_rejected(self):
+        expense = self._create_approved_expense()
+
+        Transaction.objects.create(
+            hospital_id=self.hospital_id,
+            account=self.account,
+            expense_category=self.category,
+            expense=expense,
+            transaction_type="expense",
+            amount=expense.amount,
+            transaction_date=timezone.localdate(),
+            description="Existing expense ledger",
+        )
+
+        with self.assertRaises(ValidationError):
+            pay_expense(
+                expense_id=expense.id,
+                hospital_id=self.hospital_id,
+            )
+
+        expense.refresh_from_db()
+
+        self.assertEqual(expense.status, "approved")
+        self.assertEqual(Transaction.objects.count(), 1)
+
+    # 27. Inactive account blocks expense payment.
+    def test_inactive_account_payment_rejected(self):
+        expense = self._create_approved_expense()
+
+        self.account.is_active = False
+        self.account.save(update_fields=["is_active"])
+
+        with self.assertRaises(Account.DoesNotExist):
+            pay_expense(
+                expense_id=expense.id,
+                hospital_id=self.hospital_id,
+            )
+
+        expense.refresh_from_db()
+
+        self.assertEqual(expense.status, "approved")
+        self.assertEqual(Transaction.objects.count(), 0)
+
+    # 28. Cross-hospital payment must be rejected.
+    def test_cross_hospital_payment_rejected(self):
+        expense = self._create_approved_expense()
+
+        with self.assertRaises(Expense.DoesNotExist):
+            pay_expense(
+                expense_id=expense.id,
+                hospital_id=self.other_hospital_id,
+            )
+
+        expense.refresh_from_db()
+
+        self.assertEqual(expense.status, "approved")
+        self.assertEqual(Transaction.objects.count(), 0)
+
+    # 29. Ledger failure rolls back payment status.
+    def test_expense_ledger_failure_rolls_back(self):
+        expense = self._create_approved_expense()
+
+        with patch(
+            "apps.accounting.services.Transaction.objects.create",
+            side_effect=RuntimeError(
+                "Simulated expense ledger failure"
+            ),
+        ):
+            with self.assertRaises(RuntimeError):
+                pay_expense(
+                    expense_id=expense.id,
+                    hospital_id=self.hospital_id,
+                )
+
+        expense.refresh_from_db()
+
+        self.assertEqual(expense.status, "approved")
         self.assertEqual(Transaction.objects.count(), 0)
