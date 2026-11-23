@@ -500,3 +500,276 @@ def void_invoice(*, invoice_id, hospital_id):
     invoice.save(update_fields=["status"])
 
     return invoice
+
+# ============================================================
+# REFUND PROCESSING SERVICE
+# ============================================================
+
+@transaction.atomic
+def process_refund(
+    *,
+    refund_id,
+    hospital_id,
+    original_payment_id,
+    received_by_hospital_user_id,
+    amount,
+    method,
+    reference_no,
+):
+    """
+    Record a completed refund against an original payment.
+
+    A stable refund_id must be reused for retries.
+    Refund, invoice update, and ledger entry are atomic.
+    """
+
+    # 1. Validate refund ID.
+    try:
+        refund_id = uuid.UUID(str(refund_id))
+    except (ValueError, TypeError, AttributeError):
+        raise ValidationError("Invalid refund ID.")
+
+    # 2. Validate amount.
+    if isinstance(amount, (bool, float)):
+        raise ValidationError(
+            "Use a decimal string for refund amount."
+        )
+
+    try:
+        refund_amount = Decimal(str(amount))
+
+        if (
+            not refund_amount.is_finite()
+            or refund_amount <= Decimal("0.00")
+            or refund_amount != refund_amount.quantize(
+                Decimal("0.01")
+            )
+        ):
+            raise ValidationError(
+                "Refund amount must be positive "
+                "with at most two decimal places."
+            )
+
+    except (ArithmeticError, ValueError, TypeError):
+        raise ValidationError("Invalid refund amount.")
+
+    Payment._meta.get_field("amount").clean(
+        refund_amount, None
+    )
+    Transaction._meta.get_field("amount").clean(
+        refund_amount, None
+    )
+
+    # 3. Validate refund method and reference.
+    valid_methods = {
+        value
+        for value, _ in Payment._meta.get_field(
+            "method"
+        ).choices
+    }
+
+    if method not in valid_methods:
+        raise ValidationError("Invalid refund method.")
+
+    if (
+        not isinstance(reference_no, str)
+        or not reference_no.strip()
+    ):
+        raise ValidationError(
+            "Refund reference number is required."
+        )
+
+    reference_no = reference_no.strip()
+
+    # 4. Locate original payment.
+    original = Payment.objects.get(
+        id=original_payment_id,
+        hospital_id=hospital_id,
+    )
+
+    # 5. Lock invoice first to serialize financial updates.
+    invoice = (
+        Invoice.objects
+        .select_for_update()
+        .get(
+            id=original.invoice_id,
+            hospital_id=hospital_id,
+        )
+    )
+
+    original = (
+        Payment.objects
+        .select_for_update()
+        .get(
+            id=original_payment_id,
+            hospital_id=hospital_id,
+            invoice=invoice,
+        )
+    )
+
+    # 6. Safely handle retry with the same refund ID.
+    existing = Payment.objects.filter(
+        id=refund_id,
+        hospital_id=hospital_id,
+    ).first()
+
+    if existing is not None:
+        same_request = (
+            existing.refunded_payment_id == original.id
+            and existing.invoice_id == invoice.id
+            and existing.account_id == original.account_id
+            and existing.amount == refund_amount
+            and existing.method == method
+            and existing.reference_no == reference_no
+            and str(
+                existing.received_by_hospital_user_id
+            ) == str(received_by_hospital_user_id)
+            and existing.kind == "refund"
+            and existing.status == "completed"
+        )
+
+        ledger_exists = Transaction.objects.filter(
+            hospital_id=hospital_id,
+            payment=existing,
+            account_id=original.account_id,
+            amount=refund_amount,
+            transaction_type="refund",
+        ).exists()
+
+        if not same_request or not ledger_exists:
+            raise ValidationError(
+                "Refund ID already used or refund "
+                "record is inconsistent."
+            )
+
+        return existing
+
+    # 7. Only completed original payments can be refunded.
+    if (
+        original.kind != "payment"
+        or original.status != "completed"
+    ):
+        raise ValidationError(
+            "Only completed payments can be refunded."
+        )
+
+    # Original income must exist in the ledger.
+    original_ledger_exists = Transaction.objects.filter(
+        hospital_id=hospital_id,
+        payment=original,
+        account_id=original.account_id,
+        amount=original.amount,
+        transaction_type="income",
+    ).exists()
+
+    if not original_ledger_exists:
+        raise ValidationError(
+            "Original payment ledger entry is missing "
+            "or inconsistent."
+        )
+
+    # Refund only from the original active account.
+    account = Account.objects.filter(
+        id=original.account_id,
+        hospital_id=hospital_id,
+        is_active=True,
+    ).first()
+
+    if account is None:
+        raise ValidationError(
+            "Original payment account is not active."
+        )
+
+    # 8. Check invoice status.
+    if invoice.status not in (
+        "paid",
+        "partially_paid",
+    ):
+        raise ValidationError(
+            "Invoice is not eligible for a refund."
+        )
+
+    # 9. Prevent duplicate refund references.
+    if Payment.objects.filter(
+        hospital_id=hospital_id,
+        invoice=invoice,
+        kind="refund",
+        reference_no=reference_no,
+    ).exists():
+        raise ValidationError(
+            "Refund reference already used "
+            "for this invoice."
+        )
+
+    # 10. Calculate how much was already refunded.
+    previous_refunds = Payment.objects.filter(
+        hospital_id=hospital_id,
+        refunded_payment=original,
+        kind="refund",
+        status="completed",
+    ).aggregate(total=Sum("amount"))["total"]
+
+    already_refunded = (
+        previous_refunds or Decimal("0.00")
+    )
+
+    refundable_balance = (
+        original.amount - already_refunded
+    )
+
+    if (
+        refund_amount > refundable_balance
+        or refund_amount > invoice.amount_paid
+    ):
+        raise ValidationError(
+            "Refund exceeds available refundable balance."
+        )
+
+    # 11. Create refund payment record.
+    now = timezone.now()
+
+    refund = Payment.objects.create(
+        id=refund_id,
+        hospital_id=hospital_id,
+        invoice=invoice,
+        account=account,
+        received_by_hospital_user_id=(
+            received_by_hospital_user_id
+        ),
+        refunded_payment=original,
+        amount=refund_amount,
+        method=method,
+        kind="refund",
+        status="completed",
+        reference_no=reference_no,
+        paid_at=now,
+    )
+
+    # 12. Reduce net paid amount.
+    invoice.amount_paid -= refund_amount
+
+    if invoice.amount_paid == Decimal("0.00"):
+        invoice.status = "issued"
+    else:
+        invoice.status = "partially_paid"
+
+    invoice.save(
+        update_fields=["amount_paid", "status"]
+    )
+
+    # 13. Add a new append-only refund ledger entry.
+    Transaction.objects.create(
+        hospital_id=hospital_id,
+        account=account,
+        payment=refund,
+        transaction_type="refund",
+        amount=refund_amount,
+        transaction_date=timezone.localdate(now),
+        description=(
+            f"Refund for invoice "
+            f"{invoice.invoice_number}; "
+            f"original payment {original.id}"
+        ),
+    )
+
+    return refund
