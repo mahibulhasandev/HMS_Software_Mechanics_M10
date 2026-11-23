@@ -391,3 +391,112 @@ def process_payment(
     )
 
     return payment
+
+# ============================================================
+# INVOICE LIFECYCLE SERVICES
+# ============================================================
+
+@transaction.atomic
+def issue_invoice(*, invoice_id, hospital_id):
+    """
+    Issue a draft invoice after recalculating its totals.
+    """
+
+    invoice = (
+        Invoice.objects
+        .select_for_update()
+        .get(
+            id=invoice_id,
+            hospital_id=hospital_id,
+        )
+    )
+
+    # Only draft invoices can be issued.
+    if invoice.status != InvoiceStatus.DRAFT:
+        raise ValidationError(
+            "Only draft invoices can be issued."
+        )
+
+    # Invoice must contain at least one active item.
+    has_active_items = invoice.items.filter(
+        hospital_id=hospital_id,
+        status=InvoiceItemStatus.ACTIVE,
+    ).exists()
+
+    if not has_active_items:
+        raise ValidationError(
+            "Cannot issue an invoice without active items."
+        )
+
+    # Draft invoices must not contain payments.
+    if (
+        invoice.amount_paid != Decimal("0.00")
+        or Payment.objects.filter(
+            hospital_id=hospital_id,
+            invoice=invoice,
+        ).exists()
+    ):
+        raise ValidationError(
+            "Cannot issue an invoice with payment history."
+        )
+
+    # Recalculate subtotal and total.
+    invoice = recalculate_invoice_totals(
+        invoice_id=invoice.id,
+        hospital_id=hospital_id,
+    )
+
+    # Change status and record issue time.
+    invoice.status = InvoiceStatus.ISSUED
+    invoice.issued_at = timezone.now()
+
+    invoice.save(
+        update_fields=["status", "issued_at"]
+    )
+
+    return invoice
+
+
+@transaction.atomic
+def void_invoice(*, invoice_id, hospital_id):
+    """
+    Void an unpaid draft or issued invoice.
+
+    Preserve the original invoice and its items
+    for audit purposes.
+    """
+
+    invoice = (
+        Invoice.objects
+        .select_for_update()
+        .get(
+            id=invoice_id,
+            hospital_id=hospital_id,
+        )
+    )
+
+    # Paid and partially paid invoices cannot be voided.
+    if invoice.status not in (
+        InvoiceStatus.DRAFT,
+        InvoiceStatus.ISSUED,
+    ):
+        raise ValidationError(
+            "Only draft or issued invoices can be voided."
+        )
+
+    # Reject invoices with any payment history.
+    has_payments = Payment.objects.filter(
+        hospital_id=hospital_id,
+        invoice=invoice,
+    ).exists()
+
+    if has_payments or invoice.amount_paid != Decimal("0.00"):
+        raise ValidationError(
+            "Cannot void an invoice with payment history."
+        )
+
+    invoice.status = InvoiceStatus.VOIDED
+
+    invoice.save(update_fields=["status"])
+
+    return invoice
