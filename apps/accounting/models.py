@@ -468,12 +468,30 @@ class Payment(HospitalOwnedModel):
                 ),
                 name="ck_payment_refund_reference"
             ),
+            models.UniqueConstraint(
+                fields=[
+                    "hospital_id",
+                    "kind",
+                    "method",
+                    "reference_no",
+                ],
+                condition=(
+                    models.Q(status="completed")
+                    & models.Q(
+                        method__in=[
+                            "card",
+                            "bank_transfer",
+                            "mobile_wallet",
+                        ]
+                    )
+                    & ~models.Q(reference_no="")
+                ),
+                name="uq_payment_completed_external_ref",
+            ),
         ]
 
     def __str__(self):
-        return f"{self.kind}: {self.amount}"
-
-
+     return f"{self.kind}: {self.amount}"
 # ============================================================
 # 7. EXPENSE
 # ============================================================
