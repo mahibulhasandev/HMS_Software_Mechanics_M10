@@ -12,24 +12,41 @@ class Migration(migrations.Migration):
             database_operations=[
                 migrations.RunSQL(
                     sql="""
-                        ALTER TABLE hospitals
-                        ADD COLUMN created_at timestamptz,
-                        ADD COLUMN updated_at timestamptz;
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1
+                                FROM information_schema.columns
+                                WHERE table_schema = current_schema()
+                                  AND table_name = 'hospitals'
+                                  AND column_name = 'created_at'
+                            ) THEN
+                                ALTER TABLE hospitals
+                                ADD COLUMN created_at timestamptz;
+                            END IF;
+
+                            IF NOT EXISTS (
+                                SELECT 1
+                                FROM information_schema.columns
+                                WHERE table_schema = current_schema()
+                                  AND table_name = 'hospitals'
+                                  AND column_name = 'updated_at'
+                            ) THEN
+                                ALTER TABLE hospitals
+                                ADD COLUMN updated_at timestamptz;
+                            END IF;
+                        END $$;
 
                         UPDATE hospitals
                         SET
-                            created_at = CURRENT_TIMESTAMP,
-                            updated_at = CURRENT_TIMESTAMP;
+                            created_at = COALESCE(created_at, CURRENT_TIMESTAMP),
+                            updated_at = COALESCE(updated_at, CURRENT_TIMESTAMP);
 
                         ALTER TABLE hospitals
                         ALTER COLUMN created_at SET NOT NULL,
                         ALTER COLUMN updated_at SET NOT NULL;
                     """,
-                    reverse_sql="""
-                        ALTER TABLE hospitals
-                        DROP COLUMN updated_at,
-                        DROP COLUMN created_at;
-                    """,
+                    reverse_sql=migrations.RunSQL.noop,
                 ),
             ],
             state_operations=[],

@@ -37,17 +37,17 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+
     'apps.hospitals.apps.HospitalsConfig',
-    "accounting.apps.AccountingConfig",
-    "apps.clinic.apps.ClinicConfig",
-    "apps.patients.apps.PatientsConfig",
+    'apps.accounting.apps.AccountingConfig',
+    'apps.clinic.apps.ClinicConfig',
+    'apps.patients.apps.PatientsConfig',
     'apps.doctors',
-    "apps.pharmacy",
-    "apps.diagnostic.apps.DiagnosticConfig",
-    
-    
-    "rest_framework",
-    "django_filters",
+    'apps.pharmacy',
+    'apps.diagnostic.apps.DiagnosticConfig',
+
+    'rest_framework',
+    'django_filters',
 ]
 
 
