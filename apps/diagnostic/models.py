@@ -2,7 +2,7 @@ import uuid
 from django.db import models
 
 
-# Test categories 
+# Test categories
 class TestCategory(models.Model):
     id = models.UUIDField(
         primary_key=True,
@@ -27,7 +27,7 @@ class TestCategory(models.Model):
         return self.name
 
 
-# Diagnostic tests 
+# Diagnostic tests
 class DiagnosticTest(models.Model):
     id = models.UUIDField(
         primary_key=True,
@@ -61,7 +61,7 @@ class DiagnosticTest(models.Model):
         return f"{self.test_code} - {self.name}"
 
 
-# Test orders 
+# Test orders
 class TestOrder(models.Model):
     id = models.UUIDField(
         primary_key=True,
@@ -69,17 +69,29 @@ class TestOrder(models.Model):
         editable=False,
     )
     hospital_id = models.UUIDField(db_index=True)
+    patient_id = models.UUIDField(null=True, blank=True, db_index=True)
+    patient_visit_id = models.UUIDField(null=True, blank=True, db_index=True)
+    ordered_by_doctor_id = models.UUIDField(null=True, blank=True, db_index=True)
+    order_number = models.TextField(default="")
     status = models.TextField(default="pending")
+    priority = models.TextField(default="routine")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = "test_orders"
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["hospital_id", "order_number"],
+                name="uq_test_orders_hospital_order_number",
+            )
+        ]
 
     def __str__(self):
-        return str(self.id)
+        return f"{self.order_number} ({self.id})"
 
 
-# Test order items 
+# Test order items
 class TestOrderItem(models.Model):
     id = models.UUIDField(
         primary_key=True,
@@ -113,7 +125,7 @@ class TestOrderItem(models.Model):
         return f"{self.id} - {self.status}"
 
 
-# Test results 
+# Test results
 class TestResult(models.Model):
     id = models.UUIDField(
         primary_key=True,
@@ -140,7 +152,7 @@ class TestResult(models.Model):
         return f"{self.parameter_name}: {self.result_value}"
 
 
-# Diagnostic reports 
+# Diagnostic reports
 class DiagnosticReport(models.Model):
     id = models.UUIDField(
         primary_key=True,
