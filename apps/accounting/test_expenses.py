@@ -1,4 +1,4 @@
-
+﻿
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
@@ -6,14 +6,22 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.utils import timezone
-
+from apps.accounting.services import (
+    create_expense,
+    submit_expense_for_approval,
+    approve_expense,
+    reject_expense,
+)
 from apps.accounting.models import (
     Account,
     Expense,
     ExpenseCategory,
     Transaction,
 )
-from apps.accounting.services import create_expense
+from apps.accounting.services import (
+    create_expense,
+    submit_expense_for_approval,
+)
 
 
 class ExpenseCreationTests(TestCase):
@@ -217,4 +225,291 @@ class ExpenseCreationTests(TestCase):
             supplier_id,
         )
         self.assertEqual(expense.status, "draft")
+        self.assertEqual(Transaction.objects.count(), 0)
+
+    # 9. Draft expense can be submitted for approval.
+    def test_submit_expense_success(self):
+        expense = create_expense(**self.expense_data())
+
+        result = submit_expense_for_approval(
+            expense_id=expense.id,
+            hospital_id=self.hospital_id,
+        )
+
+        expense.refresh_from_db()
+
+        self.assertEqual(
+            expense.status,
+            "pending_approval",
+        )
+        self.assertEqual(result.id, expense.id)
+        self.assertIsNone(
+            expense.approved_by_hospital_user_id
+        )
+
+        # Submission must not create a ledger entry.
+        self.assertEqual(Transaction.objects.count(), 0)
+
+    # 10. An already submitted expense cannot be resubmitted.
+    def test_resubmission_rejected(self):
+        expense = create_expense(**self.expense_data())
+
+        submit_expense_for_approval(
+            expense_id=expense.id,
+            hospital_id=self.hospital_id,
+        )
+
+        with self.assertRaises(ValidationError):
+            submit_expense_for_approval(
+                expense_id=expense.id,
+                hospital_id=self.hospital_id,
+            )
+
+        self.assertEqual(Transaction.objects.count(), 0)
+
+    # 11. Other expense statuses cannot be submitted.
+    def test_non_draft_expense_rejected(self):
+        expense = create_expense(**self.expense_data())
+
+        for status in [
+            "pending_approval",
+            "approved",
+            "paid",
+            "rejected",
+        ]:
+            with self.subTest(status=status):
+                expense.status = status
+                expense.save(update_fields=["status"])
+
+                with self.assertRaises(ValidationError):
+                    submit_expense_for_approval(
+                        expense_id=expense.id,
+                        hospital_id=self.hospital_id,
+                    )
+
+                expense.refresh_from_db()
+                self.assertEqual(expense.status, status)
+
+    # 12. Another hospital cannot submit the expense.
+    def test_cross_hospital_submission_rejected(self):
+        expense = create_expense(**self.expense_data())
+
+        with self.assertRaises(Expense.DoesNotExist):
+            submit_expense_for_approval(
+                expense_id=expense.id,
+                hospital_id=self.other_hospital_id,
+            )
+
+        expense.refresh_from_db()
+        self.assertEqual(expense.status, "draft")
+
+    # 13. Expense with inactive account cannot be submitted.
+    def test_inactive_account_submission_rejected(self):
+        expense = create_expense(**self.expense_data())
+
+        self.account.is_active = False
+        self.account.save(update_fields=["is_active"])
+
+        with self.assertRaises(ValidationError):
+            submit_expense_for_approval(
+                expense_id=expense.id,
+                hospital_id=self.hospital_id,
+            )
+
+        expense.refresh_from_db()
+
+        self.assertEqual(expense.status, "draft")
+        self.assertEqual(Transaction.objects.count(), 0)
+
+    # 14. Pending expense can be approved.
+    def test_approve_expense_success(self):
+        expense = create_expense(**self.expense_data())
+
+        submit_expense_for_approval(
+            expense_id=expense.id,
+            hospital_id=self.hospital_id,
+        )
+
+        approver_id = uuid.uuid4()
+
+        approve_expense(
+            expense_id=expense.id,
+            hospital_id=self.hospital_id,
+            approved_by_hospital_user_id=approver_id,
+        )
+
+        expense.refresh_from_db()
+
+        self.assertEqual(expense.status, "approved")
+        self.assertEqual(
+            expense.approved_by_hospital_user_id,
+            approver_id,
+        )
+        self.assertEqual(Transaction.objects.count(), 0)
+
+    # 15. Pending expense can be rejected.
+    def test_reject_expense_success(self):
+        expense = create_expense(**self.expense_data())
+
+        submit_expense_for_approval(
+            expense_id=expense.id,
+            hospital_id=self.hospital_id,
+        )
+
+        reject_expense(
+            expense_id=expense.id,
+            hospital_id=self.hospital_id,
+        )
+
+        expense.refresh_from_db()
+
+        self.assertEqual(expense.status, "rejected")
+        self.assertIsNone(
+            expense.approved_by_hospital_user_id
+        )
+        self.assertEqual(Transaction.objects.count(), 0)
+
+    # 16. Non-pending expenses cannot be approved.
+    def test_approve_invalid_status_rejected(self):
+        expense = create_expense(**self.expense_data())
+
+        for status in [
+            "draft",
+            "approved",
+            "paid",
+            "rejected",
+        ]:
+            with self.subTest(status=status):
+                expense.status = status
+                expense.save(update_fields=["status"])
+
+                with self.assertRaises(ValidationError):
+                    approve_expense(
+                        expense_id=expense.id,
+                        hospital_id=self.hospital_id,
+                        approved_by_hospital_user_id=uuid.uuid4(),
+                    )
+
+                expense.refresh_from_db()
+                self.assertEqual(expense.status, status)
+
+    # 17. Non-pending expenses cannot be rejected.
+    def test_reject_invalid_status_rejected(self):
+        expense = create_expense(**self.expense_data())
+
+        for status in [
+            "draft",
+            "approved",
+            "paid",
+            "rejected",
+        ]:
+            with self.subTest(status=status):
+                expense.status = status
+                expense.save(update_fields=["status"])
+
+                with self.assertRaises(ValidationError):
+                    reject_expense(
+                        expense_id=expense.id,
+                        hospital_id=self.hospital_id,
+                    )
+
+                expense.refresh_from_db()
+                self.assertEqual(expense.status, status)
+
+    # 18. Invalid approver ID is rejected.
+    def test_invalid_approver_rejected(self):
+        expense = create_expense(**self.expense_data())
+
+        submit_expense_for_approval(
+            expense_id=expense.id,
+            hospital_id=self.hospital_id,
+        )
+
+        for approver_id in [None, "invalid-uuid", ""]:
+            with self.subTest(approver_id=approver_id):
+                with self.assertRaises(ValidationError):
+                    approve_expense(
+                        expense_id=expense.id,
+                        hospital_id=self.hospital_id,
+                        approved_by_hospital_user_id=approver_id,
+                    )
+
+        expense.refresh_from_db()
+
+        self.assertEqual(expense.status, "pending_approval")
+        self.assertIsNone(
+            expense.approved_by_hospital_user_id
+        )
+
+    # 19. Another hospital cannot approve or reject.
+    def test_cross_hospital_approval_rejected(self):
+        expense = create_expense(**self.expense_data())
+
+        submit_expense_for_approval(
+            expense_id=expense.id,
+            hospital_id=self.hospital_id,
+        )
+
+        with self.assertRaises(Expense.DoesNotExist):
+            approve_expense(
+                expense_id=expense.id,
+                hospital_id=self.other_hospital_id,
+                approved_by_hospital_user_id=uuid.uuid4(),
+            )
+
+        with self.assertRaises(Expense.DoesNotExist):
+            reject_expense(
+                expense_id=expense.id,
+                hospital_id=self.other_hospital_id,
+            )
+
+        expense.refresh_from_db()
+        self.assertEqual(expense.status, "pending_approval")
+
+    # 20. Inactive account blocks approval.
+    def test_inactive_account_approval_rejected(self):
+        expense = create_expense(**self.expense_data())
+
+        submit_expense_for_approval(
+            expense_id=expense.id,
+            hospital_id=self.hospital_id,
+        )
+
+        self.account.is_active = False
+        self.account.save(update_fields=["is_active"])
+
+        with self.assertRaises(ValidationError):
+            approve_expense(
+                expense_id=expense.id,
+                hospital_id=self.hospital_id,
+                approved_by_hospital_user_id=uuid.uuid4(),
+            )
+
+        expense.refresh_from_db()
+
+        self.assertEqual(expense.status, "pending_approval")
+        self.assertEqual(Transaction.objects.count(), 0)
+
+    # 21. Empty description blocks approval.
+    def test_empty_description_approval_rejected(self):
+        expense = create_expense(**self.expense_data())
+
+        submit_expense_for_approval(
+            expense_id=expense.id,
+            hospital_id=self.hospital_id,
+        )
+
+        expense.description = "   "
+        expense.save(update_fields=["description"])
+
+        with self.assertRaises(ValidationError):
+            approve_expense(
+                expense_id=expense.id,
+                hospital_id=self.hospital_id,
+                approved_by_hospital_user_id=uuid.uuid4(),
+            )
+
+        expense.refresh_from_db()
+
+        self.assertEqual(expense.status, "pending_approval")
         self.assertEqual(Transaction.objects.count(), 0)

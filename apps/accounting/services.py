@@ -878,3 +878,198 @@ def create_expense(
     )
 
     return expense
+
+# ============================================================
+# EXPENSE APPROVAL WORKFLOW
+# ============================================================
+
+@transaction.atomic
+def submit_expense_for_approval(
+    *,
+    expense_id,
+    hospital_id,
+):
+    """
+    Submit a draft expense for approval.
+
+    Only draft expenses can be submitted.
+    No payment or ledger entry is created.
+    """
+
+    # Lock expense to prevent concurrent status changes.
+    expense = (
+        Expense.objects
+        .select_for_update()
+        .get(
+            id=expense_id,
+            hospital_id=hospital_id,
+        )
+    )
+
+    # Only draft expenses can be submitted.
+    if expense.status != "draft":
+        raise ValidationError(
+            "Only draft expenses can be submitted."
+        )
+
+    # Ensure amount remains valid.
+    if expense.amount <= Decimal("0.00"):
+        raise ValidationError(
+            "Expense amount must be positive."
+        )
+
+    # Verify the account is still active.
+    account_exists = Account.objects.filter(
+        id=expense.account_id,
+        hospital_id=hospital_id,
+        is_active=True,
+    ).exists()
+
+    if not account_exists:
+        raise ValidationError(
+            "Expense account is not active "
+            "or does not belong to the hospital."
+        )
+
+    # Verify expense category belongs to the hospital.
+    category_exists = ExpenseCategory.objects.filter(
+        id=expense.expense_category_id,
+        hospital_id=hospital_id,
+    ).exists()
+
+    if not category_exists:
+        raise ValidationError(
+            "Expense category does not belong "
+            "to this hospital."
+        )
+
+    # Submit expense for approval.
+    expense.status = "pending_approval"
+
+    expense.save(
+        update_fields=["status"]
+    )
+
+    return expense
+
+# ============================================================
+# EXPENSE APPROVAL AND REJECTION
+# ============================================================
+
+@transaction.atomic
+def approve_expense(
+    *,
+    expense_id,
+    hospital_id,
+    approved_by_hospital_user_id,
+):
+    """
+    Approve an expense awaiting approval.
+
+    The approver's identity and permission must be
+    verified by the calling authentication layer.
+    """
+
+    expense = (
+        Expense.objects
+        .select_for_update()
+        .get(
+            id=expense_id,
+            hospital_id=hospital_id,
+        )
+    )
+
+    # Only pending expenses can be approved.
+    if expense.status != "pending_approval":
+        raise ValidationError(
+            "Only pending expenses can be approved."
+        )
+
+    # Validate the approver ID format.
+    try:
+        approver_id = uuid.UUID(
+            str(approved_by_hospital_user_id)
+        )
+    except (ValueError, TypeError, AttributeError):
+        raise ValidationError(
+            "A valid approver ID is required."
+        )
+
+    # Validate expense before approval.
+    if expense.amount <= Decimal("0.00"):
+        raise ValidationError(
+            "Expense amount must be positive."
+        )
+
+    if not expense.description.strip():
+        raise ValidationError(
+            "Expense description is required."
+        )
+
+    # Check that the account is still active.
+    if not Account.objects.filter(
+        id=expense.account_id,
+        hospital_id=hospital_id,
+        is_active=True,
+    ).exists():
+        raise ValidationError(
+            "Expense account is inactive or invalid."
+        )
+
+    # Verify category belongs to the same hospital.
+    if not ExpenseCategory.objects.filter(
+        id=expense.expense_category_id,
+        hospital_id=hospital_id,
+    ).exists():
+        raise ValidationError(
+            "Expense category is invalid."
+        )
+
+    # Approve expense.
+    expense.status = "approved"
+    expense.approved_by_hospital_user_id = approver_id
+
+    expense.save(
+        update_fields=[
+            "status",
+            "approved_by_hospital_user_id",
+        ]
+    )
+
+    return expense
+
+
+@transaction.atomic
+def reject_expense(
+    *,
+    expense_id,
+    hospital_id,
+):
+    """
+    Reject an expense awaiting approval.
+
+    The expense remains stored for audit purposes.
+    """
+
+    expense = (
+        Expense.objects
+        .select_for_update()
+        .get(
+            id=expense_id,
+            hospital_id=hospital_id,
+        )
+    )
+
+    # Only pending expenses can be rejected.
+    if expense.status != "pending_approval":
+        raise ValidationError(
+            "Only pending expenses can be rejected."
+        )
+
+    expense.status = "rejected"
+
+    expense.save(
+        update_fields=["status"]
+    )
+
+    return expense
