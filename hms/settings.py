@@ -42,10 +42,12 @@ INSTALLED_APPS = [
     "apps.clinic.apps.ClinicConfig",
     "apps.patients.apps.PatientsConfig",
     'apps.doctors',
-    # "apps.clinic",
     "apps.pharmacy",
-    # "apps.diagnostic",
     "apps.diagnostic.apps.DiagnosticConfig",
+    
+    
+    "rest_framework",
+    "django_filters",
 ]
 
 
@@ -85,7 +87,7 @@ WSGI_APPLICATION = 'hms.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'hms_fresh',
+        'NAME': 'mydatabase',
         'USER': 'admin',
         'PASSWORD': 'admin123',
         'HOST': 'localhost',
