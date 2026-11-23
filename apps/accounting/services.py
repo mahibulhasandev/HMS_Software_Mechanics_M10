@@ -5,7 +5,7 @@ from .models import Account, Payment, Transaction
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Sum
 from datetime import date, datetime
 from decimal import DecimalException
@@ -179,6 +179,129 @@ def add_invoice_item(
 
     return item
 
+
+def _create_payment_record(
+    *,
+    id,
+    hospital_id,
+    invoice,
+    account,
+    received_by_hospital_user_id,
+    refunded_payment,
+    amount,
+    method,
+    kind,
+    status,
+    reference_no,
+    paid_at,
+):
+    """
+    Create a validated payment or refund record.
+
+    This helper keeps payment and refund creation consistent and
+    also verifies the refund relationship and hospital ownership.
+    """
+    try:
+        payment_id = uuid.UUID(str(id))
+        receiver_id = uuid.UUID(
+            str(received_by_hospital_user_id)
+        )
+    except (ValueError, TypeError, AttributeError):
+        raise ValidationError(
+            "A valid payment ID and receiver ID are required."
+        )
+
+    if invoice.hospital_id != hospital_id:
+        raise ValidationError(
+            "Invoice does not belong to this hospital."
+        )
+
+    if account.hospital_id != hospital_id:
+        raise ValidationError(
+            "Account does not belong to this hospital."
+        )
+
+    if not account.is_active:
+        raise ValidationError("Payment account is not active.")
+
+    if kind == "refund":
+        if refunded_payment is None:
+            raise ValidationError(
+                "A refund must reference an original payment."
+            )
+        if refunded_payment.hospital_id != hospital_id:
+            raise ValidationError(
+                "Original payment does not belong to this hospital."
+            )
+        if refunded_payment.invoice_id != invoice.id:
+            raise ValidationError(
+                "Refund payment must belong to the original invoice."
+            )
+    elif kind == "payment":
+        if refunded_payment is not None:
+            raise ValidationError(
+                "A payment cannot reference a refunded payment."
+            )
+    else:
+        raise ValidationError("Invalid payment kind.")
+
+    valid_methods = {
+        value
+        for value, _ in Payment._meta.get_field("method").choices
+    }
+    if method not in valid_methods:
+        raise ValidationError("Invalid payment method.")
+
+    valid_statuses = {
+        value
+        for value, _ in Payment._meta.get_field("status").choices
+    }
+    if status not in valid_statuses:
+        raise ValidationError("Invalid payment status.")
+
+    if isinstance(amount, bool):
+        raise ValidationError("Invalid payment amount.")
+
+    try:
+        payment_amount = Decimal(str(amount))
+        if (
+            not payment_amount.is_finite()
+            or payment_amount <= Decimal("0.00")
+            or payment_amount != payment_amount.quantize(
+                Decimal("0.01")
+            )
+        ):
+            raise ValidationError(
+                "Payment amount must be positive with at most "
+                "two decimal places."
+            )
+    except (ArithmeticError, ValueError, TypeError):
+        raise ValidationError("Invalid payment amount.")
+
+    Payment._meta.get_field("amount").clean(payment_amount, None)
+
+    if not isinstance(reference_no, str) or not reference_no.strip():
+        raise ValidationError("Payment reference number is required.")
+
+    if paid_at is None:
+        raise ValidationError("Payment time is required.")
+
+    return Payment.objects.create(
+        id=payment_id,
+        hospital_id=hospital_id,
+        invoice=invoice,
+        account=account,
+        received_by_hospital_user_id=receiver_id,
+        refunded_payment=refunded_payment,
+        amount=payment_amount,
+        method=method,
+        kind=kind,
+        status=status,
+        reference_no=reference_no.strip(),
+        paid_at=paid_at,
+    )
+
+
 @transaction.atomic
 def process_payment(
     *,
@@ -350,7 +473,7 @@ def process_payment(
     # 9. Create payment record.
     now = timezone.now()
 
-    payment = Payment.objects.create(
+    payment = _create_payment_record(
         id=payment_id,
         hospital_id=hospital_id,
         invoice=invoice,
@@ -731,7 +854,7 @@ def process_refund(
     # 11. Create refund payment record.
     now = timezone.now()
 
-    refund = Payment.objects.create(
+    refund = _create_payment_record(
         id=refund_id,
         hospital_id=hospital_id,
         invoice=invoice,
@@ -1168,3 +1291,40 @@ def pay_expense(*, expense_id, hospital_id):
     )
 
     return ledger_entry
+
+# ============================================================
+# PAYMENT DATABASE ERROR HANDLING
+# ============================================================
+
+def _create_payment_record(**fields):
+    """
+    Create a Payment record and convert the known
+    duplicate electronic reference error into a
+    ValidationError.
+    """
+
+    try:
+        # Nested transaction creates a savepoint.
+        with transaction.atomic():
+            return Payment.objects.create(**fields)
+
+    except IntegrityError as exc:
+        cause = getattr(exc, "__cause__", None)
+        diag = getattr(cause, "diag", None)
+
+        constraint_name = getattr(
+            diag,
+            "constraint_name",
+            None,
+        )
+
+        if constraint_name == (
+            "uq_payment_completed_external_ref"
+        ):
+            raise ValidationError(
+                "This electronic transaction reference "
+                "has already been used."
+            ) from exc
+
+        # Preserve all unrelated database errors.
+        raise

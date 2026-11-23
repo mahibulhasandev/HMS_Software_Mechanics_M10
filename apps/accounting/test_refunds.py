@@ -271,3 +271,72 @@ class RefundProcessingTests(TestCase):
         # Only the original payment and ledger remain.
         self.assertEqual(Payment.objects.count(), 1)
         self.assertEqual(Transaction.objects.count(), 1)
+
+    # 12. Database duplicate refund reference is handled.
+    def test_database_duplicate_refund_reference_handled(self):
+        reference = "WALLET-REF-DUP-001"
+
+        # First invoice: completed electronic refund.
+        first_refund = self.refund(
+            amount="100.00",
+            method="mobile_wallet",
+            reference_no=reference,
+        )
+
+        self.assertEqual(first_refund.status, "completed")
+
+        # Create a second invoice in the same hospital.
+        second_invoice = Invoice.objects.create(
+            hospital_id=self.hospital_id,
+            created_by_hospital_user_id=self.user_id,
+            invoice_number="INV-REF-002",
+            subtotal=Decimal("1000.00"),
+            discount=Decimal("0.00"),
+            total=Decimal("1000.00"),
+            amount_paid=Decimal("0.00"),
+            status="issued",
+            issued_at=timezone.now(),
+        )
+
+        # Make a completed payment for the second invoice.
+        second_payment = process_payment(
+            payment_id=uuid.uuid4(),
+            hospital_id=self.hospital_id,
+            invoice_id=second_invoice.id,
+            account_id=self.account.id,
+            received_by_hospital_user_id=self.user_id,
+            amount="1000.00",
+            method="cash",
+            reference_no="SECOND-ORIGINAL-PAY",
+        )
+
+        # A second refund cannot reuse the electronic
+        # reference, even for a different invoice.
+        with self.assertRaises(ValidationError) as context:
+            process_refund(
+                refund_id=uuid.uuid4(),
+                hospital_id=self.hospital_id,
+                original_payment_id=second_payment.id,
+                received_by_hospital_user_id=self.user_id,
+                amount="200.00",
+                method="mobile_wallet",
+                reference_no=reference,
+            )
+
+        self.assertIn(
+            "electronic transaction reference",
+            str(context.exception),
+        )
+
+        # Original payments + first refund only.
+        self.assertEqual(Payment.objects.count(), 3)
+        self.assertEqual(Transaction.objects.count(), 3)
+
+        # Failed refund must not change second invoice.
+        second_invoice.refresh_from_db()
+
+        self.assertEqual(
+            second_invoice.amount_paid,
+            Decimal("1000.00"),
+        )
+        self.assertEqual(second_invoice.status, "paid")

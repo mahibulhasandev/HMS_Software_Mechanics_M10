@@ -244,3 +244,58 @@ class PaymentProcessingTests(TestCase):
             Decimal("0.00"),
         )
         self.assertEqual(self.invoice.status, "issued")
+
+    # 11. Database duplicate reference becomes ValidationError.
+    def test_database_duplicate_reference_handled(self):
+        reference = "CARD-DUPLICATE-001"
+
+        # First invoice receives a valid card payment.
+        process_payment(
+            **self.payment_data(
+                method="card",
+                reference_no=reference,
+            )
+        )
+
+        # Create another invoice in the same hospital.
+        second_invoice = Invoice.objects.create(
+            hospital_id=self.hospital_id,
+            created_by_hospital_user_id=self.user_id,
+            invoice_number="INV-PAY-002",
+            subtotal=Decimal("1000.00"),
+            discount=Decimal("0.00"),
+            total=Decimal("1000.00"),
+            amount_paid=Decimal("0.00"),
+            status="issued",
+            issued_at=timezone.now(),
+        )
+
+        # The same electronic reference must be rejected.
+        with self.assertRaises(ValidationError) as context:
+            process_payment(
+                **self.payment_data(
+                    invoice_id=second_invoice.id,
+                    method="card",
+                    reference_no=reference,
+                )
+            )
+
+        self.assertIn(
+            "electronic transaction reference",
+            str(context.exception),
+        )
+
+        # Verify no duplicate financial records were created.
+        self.assertEqual(Payment.objects.count(), 1)
+        self.assertEqual(Transaction.objects.count(), 1)
+
+        second_invoice.refresh_from_db()
+
+        self.assertEqual(
+            second_invoice.amount_paid,
+            Decimal("0.00"),
+        )
+        self.assertEqual(
+            second_invoice.status,
+            "issued",
+        )
