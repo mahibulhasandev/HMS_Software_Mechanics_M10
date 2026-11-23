@@ -7,6 +7,9 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Sum
+from datetime import date, datetime
+from decimal import DecimalException
+from .models import Expense, ExpenseCategory
 
 from .models import Invoice, InvoiceItemStatus
 from .models import (
@@ -773,3 +776,105 @@ def process_refund(
     )
 
     return refund
+
+# ============================================================
+# EXPENSE CREATION SERVICE
+# ============================================================
+
+@transaction.atomic
+def create_expense(
+    *,
+    hospital_id,
+    expense_category_id,
+    account_id,
+    amount,
+    description,
+    expense_date=None,
+    supplier_id=None,
+):
+    """
+    Create a draft hospital expense.
+
+    Does not create a ledger entry.
+    Payment and approval are separate operations.
+    """
+
+    # 1. Validate expense amount.
+    if isinstance(amount, (bool, float)):
+        raise ValidationError(
+            "Use a decimal string for expense amount."
+        )
+
+    try:
+        expense_amount = Decimal(str(amount))
+
+        if (
+            not expense_amount.is_finite()
+            or expense_amount <= Decimal("0.00")
+            or expense_amount != expense_amount.quantize(
+                Decimal("0.01")
+            )
+        ):
+            raise ValidationError(
+                "Expense amount must be positive "
+                "with at most two decimal places."
+            )
+
+    except (DecimalException, ValueError, TypeError):
+        raise ValidationError("Invalid expense amount.")
+
+    # Check the model's decimal limits.
+    Expense._meta.get_field("amount").clean(
+        expense_amount, None
+    )
+
+    # 2. Validate description.
+    if (
+        not isinstance(description, str)
+        or not description.strip()
+    ):
+        raise ValidationError(
+            "Expense description is required."
+        )
+
+    description = description.strip()
+
+    # 3. Validate expense date.
+    if expense_date is None:
+        expense_date = timezone.localdate()
+
+    if (
+        not isinstance(expense_date, date)
+        or isinstance(expense_date, datetime)
+    ):
+        raise ValidationError(
+            "Expense date must be a date object."
+        )
+
+    # 4. Verify expense category belongs to hospital.
+    category = ExpenseCategory.objects.get(
+        id=expense_category_id,
+        hospital_id=hospital_id,
+    )
+
+    # 5. Verify account belongs to hospital and is active.
+    account = Account.objects.get(
+        id=account_id,
+        hospital_id=hospital_id,
+        is_active=True,
+    )
+
+    # 6. Create draft expense.
+    expense = Expense.objects.create(
+        hospital_id=hospital_id,
+        expense_category=category,
+        account=account,
+        supplier_id=supplier_id,
+        approved_by_hospital_user_id=None,
+        amount=expense_amount,
+        expense_date=expense_date,
+        description=description,
+        status="draft",
+    )
+
+    return expense
