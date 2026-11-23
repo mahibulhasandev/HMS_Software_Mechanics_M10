@@ -37,11 +37,17 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'apps.diagnostic.apps.DiagnosticConfig',
-    
     'apps.hospitals.apps.HospitalsConfig',
-    'accounting.apps.AccountingConfig',
+    "accounting.apps.AccountingConfig",
+    # "apps.clinic.apps.ClinicConfig",
+    "apps.patients.apps.PatientsConfig",
+    'apps.doctors',
+    "apps.clinic",
+    "apps.pharmacy",
+    # "apps.diagnostic",
+    "apps.diagnostic.apps.DiagnosticConfig",
 ]
+
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
@@ -79,7 +85,7 @@ WSGI_APPLICATION = 'hms.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'mydatabase',
+        'NAME': 'hms_fresh',
         'USER': 'admin',
         'PASSWORD': 'admin123',
         'HOST': 'localhost',
@@ -132,4 +138,12 @@ MAILERS = {
     'default': {
         'BACKEND': 'django.core.mail.backends.console.EmailBackend',
     },
+}
+
+REST_FRAMEWORK = {
+    "DEFAULT_FILTER_BACKENDS": [
+        "django_filters.rest_framework.DjangoFilterBackend",
+        "rest_framework.filters.SearchFilter",
+        "rest_framework.filters.OrderingFilter",
+    ],
 }
