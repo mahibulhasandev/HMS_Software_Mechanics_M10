@@ -2,6 +2,7 @@
 import uuid
 
 from django.db import models
+from django.utils import timezone
 from django.core.validators import RegexValidator
 from django.core.exceptions import ValidationError
 
@@ -150,7 +151,7 @@ class Patient(models.Model):
         ]
 
     def clean(self):
-        if self.date_of_birth and self.date_of_birth > models.functions.Now():
+        if self.date_of_birth and self.date_of_birth > timezone.localdate():
             raise ValidationError(
                 {"date_of_birth": "Date of birth cannot be in the future."}
             )
