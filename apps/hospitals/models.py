@@ -20,6 +20,8 @@ class Hospital(models.Model):
     registration_number = models.CharField(
         max_length=100,
         unique=True,
+        null=True,
+        blank=True,
     )
 
     name = models.CharField(max_length=255)

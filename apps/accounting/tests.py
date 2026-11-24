@@ -6,7 +6,7 @@ from decimal import Decimal
 from django.db import DatabaseError, connection, transaction
 from django.test import TestCase
 
-from accounting.models import (
+from apps.accounting.models import (
     Account,
     Expense,
     ExpenseCategory,
