@@ -4,7 +4,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.hospitals.models import Hospital
-from .models import Doctor, DoctorDepartment, DoctorSpecialization
+from apps.doctors.models import Doctor, DoctorDepartment, DoctorSpecialization
 
 
 class DoctorsAPITests(APITestCase):

@@ -7,7 +7,7 @@ from rest_framework.test import APITestCase
 from apps.doctors.models import Doctor, DoctorDepartment
 from apps.hospitals.models import Hospital
 from apps.patients.models import Patient, PatientVisit
-from .models import (
+from apps.clinic.models import (
     Appointment,
     Consultation,
     Diagnosis,
