@@ -31,6 +31,7 @@ ALLOWED_HOSTS = []
 # Application definition
 
 INSTALLED_APPS = [
+    "apps.core.apps.CoreConfig",
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -48,6 +49,13 @@ INSTALLED_APPS = [
 
     'rest_framework',
     'django_filters',
+]
+
+AUTH_USER_MODEL = "core.User"
+
+AUTHENTICATION_BACKENDS = [
+    "apps.core.backends.EmailOrPhoneBackend",
+    "django.contrib.auth.backends.ModelBackend",
 ]
 
 
