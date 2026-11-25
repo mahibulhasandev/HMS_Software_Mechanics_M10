@@ -174,6 +174,14 @@ class Doctor(models.Model):
         blank=True,
     )
 
+    employee = models.OneToOneField(
+        "core.Employee",
+        on_delete=models.PROTECT,
+        related_name="doctor_profile",
+        null=True,
+        blank=True,
+    )
+
     doctor_code = models.CharField(max_length=50)
 
     # Personal Information
@@ -293,6 +301,24 @@ class Doctor(models.Model):
             elif self.specialization.department_id != self.department_id:
                 errors["specialization"] = (
                     "Specialization must belong to the selected department."
+                )
+
+        if self.employee_id:
+            if self.employee.hospital_id != self.hospital_id:
+                errors["employee"] = (
+                    "Linked employee must belong to the same hospital."
+                )
+            if self.employee.role != "doctor":
+                errors["employee"] = (
+                    "Linked employee must have the doctor role."
+                )
+            if self.employee.approval_status != "approved":
+                errors["employee"] = (
+                    "Linked employee must be approved."
+                )
+            if self.employee.employment_status != "active":
+                errors["employee"] = (
+                    "Linked employee must be active."
                 )
 
         if errors:
