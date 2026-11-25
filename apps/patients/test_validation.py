@@ -83,3 +83,64 @@ class PatientValidationTests(TestCase):
         patient.full_clean()
         patient.save()
         self.assertIsNotNone(patient.id)
+
+    # --------------------------------------------------------------------------
+    # 2. PATIENT SERIALIZER API DOB VALIDATION TESTS
+    # --------------------------------------------------------------------------
+
+    def test_serializer_accepts_valid_past_date_of_birth(self):
+        """PatientSerializer must accept valid past date_of_birth."""
+        from apps.patients.serializers import PatientSerializer
+
+        payload = {
+            "hospital": str(self.hospital.id),
+            "patient_number": "PAT-SER-PAST",
+            "first_name": "Rahim",
+            "gender": "male",
+            "phone": "01711111111",
+            "date_of_birth": "1995-05-20",
+        }
+        serializer = PatientSerializer(data=payload)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        patient = serializer.save()
+        self.assertEqual(patient.date_of_birth, datetime.date(1995, 5, 20))
+
+    def test_serializer_accepts_current_today_date_of_birth(self):
+        """PatientSerializer must accept current today's date_of_birth."""
+        from apps.patients.serializers import PatientSerializer
+
+        today = timezone.localdate()
+        payload = {
+            "hospital": str(self.hospital.id),
+            "patient_number": "PAT-SER-TODAY",
+            "first_name": "Newborn",
+            "gender": "female",
+            "phone": "01722222222",
+            "date_of_birth": str(today),
+        }
+        serializer = PatientSerializer(data=payload)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        patient = serializer.save()
+        self.assertEqual(patient.date_of_birth, today)
+
+    def test_serializer_rejects_future_date_of_birth(self):
+        """PatientSerializer must reject future date_of_birth and not create a record."""
+        from apps.patients.serializers import PatientSerializer
+
+        tomorrow = timezone.localdate() + datetime.timedelta(days=1)
+        payload = {
+            "hospital": str(self.hospital.id),
+            "patient_number": "PAT-SER-FUT",
+            "first_name": "FutureChild",
+            "gender": "male",
+            "phone": "01733333333",
+            "date_of_birth": str(tomorrow),
+        }
+        serializer = PatientSerializer(data=payload)
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("date_of_birth", serializer.errors)
+        self.assertEqual(
+            serializer.errors["date_of_birth"],
+            ["Date of birth cannot be in the future."],
+        )
+        self.assertFalse(Patient.objects.filter(patient_number="PAT-SER-FUT").exists())
