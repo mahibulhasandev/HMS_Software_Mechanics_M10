@@ -112,3 +112,16 @@ urlpatterns += [
         name="accounting-financial-summary",
     ),
 ]
+
+
+# ACCOUNTING DASHBOARD API
+
+from .dashboard_api import AccountingDashboardAPIView
+
+urlpatterns += [
+    path(
+        "dashboard/",
+        AccountingDashboardAPIView.as_view(),
+        name="accounting-dashboard",
+    ),
+]
