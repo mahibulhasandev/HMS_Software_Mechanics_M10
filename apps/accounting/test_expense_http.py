@@ -1,4 +1,4 @@
-﻿from decimal import Decimal
+from decimal import Decimal
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
@@ -569,3 +569,276 @@ class ExpenseHTTPTests(TestCase):
 
         self.assertEqual(Expense.objects.count(), 0)
         self.assertEqual(Transaction.objects.count(), 0)
+
+
+    # EXPENSE READ API TESTS
+
+    def test_expense_read_access_for_all_roles(self):
+
+        expense_id = self.create_draft()
+
+        for user in (self.admin_a, self.user_a, self.staff):
+
+            with self.subTest(user=user.username):
+
+                self.client.force_login(user)
+
+                response = self.client.get(self.URL)
+
+                self.assertEqual(
+                    response.status_code, 200, response.content
+                )
+
+                response = self.client.get(
+                    f"{self.URL}{expense_id}/"
+                )
+
+                self.assertEqual(
+                    response.status_code, 200, response.content
+                )
+
+                self.assertEqual(
+                    response.json()["expense"]["id"],
+                    expense_id,
+                )
+
+    def test_expense_list_hospital_isolation(self):
+
+        expense_a = self.create_draft()
+
+        response = self.post(
+            self.user_b,
+            self.URL,
+            self.expense_data(
+                account_id=str(self.account_b.pk),
+                expense_category_id=str(self.category_b.pk),
+            ),
+        )
+
+        self.assertEqual(
+            response.status_code, 201, response.content
+        )
+
+        expense_b = response.json()["expense"]["id"]
+
+        self.client.force_login(self.user_a)
+
+        response = self.client.get(
+            self.URL,
+            {"hospital_id": str(self.hospital_b.pk)},
+            HTTP_X_HOSPITAL_ID=str(self.hospital_b.pk),
+        )
+
+        self.assertEqual(
+            response.status_code, 200, response.content
+        )
+
+        self.assertEqual(
+            response.json()["hospital_id"],
+            str(self.hospital_a.pk),
+        )
+
+        self.assertEqual(
+            [e["id"] for e in response.json()["expenses"]],
+            [expense_a],
+        )
+
+        self.client.force_login(self.user_b)
+
+        response = self.client.get(self.URL)
+
+        self.assertEqual(response.status_code, 200)
+
+        self.assertEqual(
+            [e["id"] for e in response.json()["expenses"]],
+            [expense_b],
+        )
+
+    def test_expense_detail_cross_hospital_denied(self):
+
+        expense_id = self.create_draft()
+
+        self.client.force_login(self.user_b)
+
+        response = self.client.get(
+            f"{self.URL}{expense_id}/"
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+        self.client.force_login(self.user_a)
+
+        response = self.client.get(
+            f"{self.URL}{uuid4()}/"
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_expense_status_filter(self):
+
+        draft_id = self.create_draft()
+        paid_id = self.create_paid_expense()
+
+        self.client.force_login(self.user_a)
+
+        for status_value, expected_id in (
+            ("draft", draft_id),
+            ("paid", paid_id),
+        ):
+
+            with self.subTest(status=status_value):
+
+                response = self.client.get(
+                    self.URL,
+                    {"status": status_value},
+                )
+
+                self.assertEqual(
+                    response.status_code, 200, response.content
+                )
+
+                self.assertEqual(
+                    response.json()["count"], 1
+                )
+
+                self.assertEqual(
+                    response.json()["expenses"][0]["id"],
+                    expected_id,
+                )
+
+    def test_expense_invalid_status_filter(self):
+
+        self.client.force_login(self.user_a)
+
+        response = self.client.get(
+            self.URL,
+            {"status": "invalid_status"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_expense_pagination(self):
+
+        expense_ids = {
+            self.create_draft()
+            for _ in range(3)
+        }
+
+        self.client.force_login(self.user_a)
+
+        returned_ids = set()
+
+        for offset in range(3):
+
+            response = self.client.get(
+                self.URL,
+                {"limit": 1, "offset": offset},
+            )
+
+            self.assertEqual(
+                response.status_code, 200, response.content
+            )
+
+            data = response.json()
+
+            self.assertEqual(data["count"], 3)
+            self.assertEqual(len(data["expenses"]), 1)
+
+            returned_ids.add(data["expenses"][0]["id"])
+
+            if offset == 0:
+                self.assertIsNone(data["previous"])
+            else:
+                self.assertIsNotNone(data["previous"])
+
+            if offset == 2:
+                self.assertIsNone(data["next"])
+            else:
+                self.assertIsNotNone(data["next"])
+
+        self.assertEqual(returned_ids, expense_ids)
+
+    def test_expense_pagination_limits(self):
+
+        from django.utils import timezone
+
+        Expense.objects.bulk_create([
+            Expense(
+                hospital_id=self.hospital_a.pk,
+                expense_category=self.category_a,
+                account=self.account_a,
+                amount=Decimal("100.00"),
+                expense_date=timezone.localdate(),
+                description=f"Pagination expense {i}",
+                status="draft",
+            )
+            for i in range(101)
+        ])
+
+        self.client.force_login(self.user_a)
+
+        response = self.client.get(self.URL)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["count"], 101)
+        self.assertEqual(
+            len(response.json()["expenses"]), 50
+        )
+
+        response = self.client.get(
+            self.URL,
+            {"limit": 1000},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["count"], 101)
+        self.assertEqual(
+            len(response.json()["expenses"]), 100
+        )
+
+        self.assertIsNotNone(response.json()["next"])
+
+    def test_expense_read_anonymous_denied(self):
+
+        expense_id = self.create_draft()
+
+        self.client.logout()
+
+        for url in (
+            self.URL,
+            f"{self.URL}{expense_id}/",
+        ):
+
+            response = self.client.get(url)
+
+            self.assertEqual(response.status_code, 401)
+
+    def test_expense_read_no_membership_denied(self):
+
+        expense_id = self.create_draft()
+
+        self.client.force_login(self.no_membership)
+
+        for url in (
+            self.URL,
+            f"{self.URL}{expense_id}/",
+        ):
+
+            response = self.client.get(url)
+
+            self.assertEqual(response.status_code, 403)
+
+    def test_expense_empty_list(self):
+
+        self.client.force_login(self.user_a)
+
+        response = self.client.get(self.URL)
+
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+
+        self.assertEqual(data["count"], 0)
+        self.assertEqual(data["expenses"], [])
+        self.assertIsNone(data["next"])
+        self.assertIsNone(data["previous"])

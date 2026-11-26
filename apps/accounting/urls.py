@@ -45,3 +45,15 @@ urlpatterns += [
         "reverse",
     )
 ]
+
+
+# EXPENSE DETAIL API
+from .expense_api import ExpenseDetailAPIView
+
+urlpatterns += [
+    path(
+        "expenses/<uuid:expense_id>/",
+        ExpenseDetailAPIView.as_view(),
+        name="accounting-expense-detail",
+    ),
+]

@@ -1,4 +1,11 @@
-﻿from decimal import Decimal
+
+from rest_framework.pagination import LimitOffsetPagination
+from rest_framework.authentication import SessionAuthentication
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.views import APIView
+from .permissions import AccountingRolePermission
+
+from decimal import Decimal
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
@@ -176,6 +183,10 @@ def expense_response(expense, ledger=None):
 
 class ExpenseCreateAPIView(FinancialWriteAPIView):
 
+    def get(self, request):
+        return ExpenseListAPIView().get(request)
+
+
     def post(self, request):
 
         self.get_actor_uuid(request)
@@ -293,4 +304,91 @@ class ExpenseActionAPIView(FinancialWriteAPIView):
         return Response(
             expense_response(expense, ledger),
             status=status.HTTP_200_OK,
+        )
+
+
+# EXPENSE READ API
+
+class ExpensePagination(LimitOffsetPagination):
+
+    default_limit = 50
+    max_limit = 100
+
+
+class ExpenseListAPIView(APIView):
+
+    authentication_classes = [SessionAuthentication]
+
+    permission_classes = [
+        IsAuthenticated,
+        AccountingRolePermission,
+    ]
+
+    def get(self, request):
+
+        hospital_id = request.accounting_hospital_id
+
+        expenses = Expense.objects.filter(
+            hospital_id=hospital_id
+        ).order_by("-expense_date", "-id")
+
+        selected_status = request.query_params.get("status")
+
+        if selected_status is not None:
+
+            valid_statuses = {
+                value for value, label in
+                Expense._meta.get_field("status").flatchoices
+            }
+
+            if selected_status not in valid_statuses:
+                raise serializers.ValidationError({
+                    "status": "Invalid expense status."
+                })
+
+            expenses = expenses.filter(
+                status=selected_status
+            )
+
+        paginator = ExpensePagination()
+
+        page = paginator.paginate_queryset(
+            expenses, request, view=self
+        )
+
+        return Response({
+            "hospital_id": str(hospital_id),
+            "count": paginator.count,
+            "next": paginator.get_next_link(),
+            "previous": paginator.get_previous_link(),
+            "expenses": [
+                expense_response(expense)["expense"]
+                for expense in page
+            ],
+        })
+
+
+class ExpenseDetailAPIView(APIView):
+
+    authentication_classes = [SessionAuthentication]
+
+    permission_classes = [
+        IsAuthenticated,
+        AccountingRolePermission,
+    ]
+
+    def get(self, request, expense_id):
+
+        expense = Expense.objects.filter(
+            id=expense_id,
+            hospital_id=request.accounting_hospital_id,
+        ).first()
+
+        if expense is None:
+            raise NotFound(
+                "Expense not found in your hospital."
+            )
+
+        return Response(
+            expense_response(expense)
         )
