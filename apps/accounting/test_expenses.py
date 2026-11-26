@@ -636,9 +636,16 @@ class ExpenseCreationTests(TestCase):
 
     # 26. Existing ledger entry blocks duplicate payment.
     def test_existing_ledger_rejected(self):
+
         expense = self._create_approved_expense()
 
-        Transaction.objects.create(
+        # Create a valid posted ledger first.
+
+        expense.status = "paid"
+
+        expense.save(update_fields=["status"])
+
+        original = Transaction.objects.create(
             hospital_id=self.hospital_id,
             account=self.account,
             expense_category=self.category,
@@ -649,7 +656,18 @@ class ExpenseCreationTests(TestCase):
             description="Existing expense ledger",
         )
 
-        with self.assertRaises(ValidationError):
+        # Simulate a corrupted source status for
+        # defensive service validation only.
+
+        expense.status = "approved"
+
+        expense.save(update_fields=["status"])
+
+        with self.assertRaisesMessage(
+            ValidationError,
+            "This expense already has a ledger entry.",
+        ):
+
             pay_expense(
                 expense_id=expense.id,
                 hospital_id=self.hospital_id,
@@ -658,7 +676,14 @@ class ExpenseCreationTests(TestCase):
         expense.refresh_from_db()
 
         self.assertEqual(expense.status, "approved")
+
         self.assertEqual(Transaction.objects.count(), 1)
+
+        self.assertTrue(
+            Transaction.objects.filter(
+                pk=original.pk
+            ).exists()
+        )
 
     # 27. Inactive account blocks expense payment.
     def test_inactive_account_payment_rejected(self):
