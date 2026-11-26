@@ -542,6 +542,19 @@ class Expense(HospitalOwnedModel):
         choices=ExpenseStatus.choices
     )
 
+    idempotency_key = models.UUIDField(
+        null=True,
+        blank=True,
+        editable=False,
+    )
+
+    request_fingerprint = models.CharField(
+        max_length=64,
+        null=True,
+        blank=True,
+        editable=False,
+    )
+
     class Meta:
         db_table = "expenses"
         constraints = [
@@ -560,6 +573,24 @@ class Expense(HospitalOwnedModel):
                     status__in=ExpenseStatus.values
                 ),
                 name="ck_expense_status_valid"
+            ),
+            models.UniqueConstraint(
+                fields=["hospital_id", "idempotency_key"],
+                name="uq_expense_hospital_idem_key",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        idempotency_key__isnull=True,
+                        request_fingerprint__isnull=True,
+                    )
+                    |
+                    models.Q(
+                        idempotency_key__isnull=False,
+                        request_fingerprint__isnull=False,
+                    )
+                ),
+                name="ck_expense_idem_fields_pair",
             ),
         ]
 

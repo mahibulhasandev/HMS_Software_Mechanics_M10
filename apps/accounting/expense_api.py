@@ -1,3 +1,6 @@
+import hashlib
+import json
+
 
 from rest_framework.pagination import LimitOffsetPagination
 from rest_framework.authentication import SessionAuthentication
@@ -8,10 +11,10 @@ from .permissions import AccountingRolePermission
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db import transaction
+from django.db import IntegrityError, transaction
 
 from rest_framework import serializers, status
-from rest_framework.exceptions import NotFound, PermissionDenied
+from rest_framework.exceptions import APIException, NotFound, PermissionDenied
 from rest_framework.response import Response
 
 from .models import (
@@ -181,6 +184,62 @@ def expense_response(expense, ledger=None):
     return data
 
 
+class ExpenseIdempotencyConflict(APIException):
+
+    status_code = 409
+
+    default_detail = (
+        "Idempotency key already used for a different request."
+    )
+
+    default_code = "idempotency_conflict"
+
+
+def expense_request_fingerprint(actor_uuid, payload):
+
+    expense_date = payload.get("expense_date")
+
+    canonical = {
+        "version": 1,
+        "actor_uuid": str(actor_uuid),
+        "expense_category_id": str(
+            payload["expense_category_id"]
+        ),
+        "account_id": str(payload["account_id"]),
+        "amount": format(payload["amount"], ".2f"),
+        "description": payload["description"].strip(),
+        "expense_date": (
+            expense_date.isoformat()
+            if expense_date is not None
+            else None
+        ),
+    }
+
+    encoded = json.dumps(
+        canonical,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def expense_replay_response(expense, fingerprint):
+
+    if expense.request_fingerprint != fingerprint:
+
+        raise ExpenseIdempotencyConflict()
+
+    return Response(
+        expense_response(expense),
+        status=status.HTTP_200_OK,
+        headers={
+            "Idempotency-Replayed": "true",
+        },
+    )
+
+
 class ExpenseCreateAPIView(FinancialWriteAPIView):
 
     def get(self, request):
@@ -189,20 +248,111 @@ class ExpenseCreateAPIView(FinancialWriteAPIView):
 
     def post(self, request):
 
-        self.get_actor_uuid(request)
+        actor_uuid = self.get_actor_uuid(request)
 
         serializer = ExpenseCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        expense = execute_expense_service(
-            create_expense,
-            hospital_id=request.accounting_hospital_id,
-            **serializer.validated_data,
+        payload = serializer.validated_data
+
+        hospital_id = request.accounting_hospital_id
+
+        raw_key = request.headers.get("Idempotency-Key")
+
+        # Preserve compatibility with existing API clients.
+
+        if raw_key is None:
+
+            expense = execute_expense_service(
+                create_expense,
+                hospital_id=hospital_id,
+                **payload,
+            )
+
+            return Response(
+                expense_response(expense),
+                status=status.HTTP_201_CREATED,
+            )
+
+        try:
+
+            key = serializers.UUIDField().run_validation(
+                raw_key
+            )
+
+        except serializers.ValidationError as exc:
+
+            raise serializers.ValidationError({
+                "Idempotency-Key": "A valid UUID is required."
+            }) from exc
+
+        fingerprint = expense_request_fingerprint(
+            actor_uuid,
+            payload,
         )
+
+        existing = Expense.objects.filter(
+            hospital_id=hospital_id,
+            idempotency_key=key,
+        ).first()
+
+        if existing is not None:
+
+            return expense_replay_response(
+                existing,
+                fingerprint,
+            )
+
+        try:
+
+            expense = execute_expense_service(
+                create_expense,
+                hospital_id=hospital_id,
+                idempotency_key=key,
+                request_fingerprint=fingerprint,
+                **payload,
+            )
+
+        except IntegrityError as exc:
+
+            # Handle only the known idempotency constraint.
+            # The failed insert has already been rolled back
+            # by execute_expense_service's atomic block.
+
+            cause = getattr(exc, "__cause__", None)
+
+            diag = getattr(cause, "diag", None)
+
+            constraint = getattr(
+                diag,
+                "constraint_name",
+                None,
+            )
+
+            if constraint != "uq_expense_hospital_idem_key":
+
+                raise
+
+            existing = Expense.objects.filter(
+                hospital_id=hospital_id,
+                idempotency_key=key,
+            ).first()
+
+            if existing is None:
+
+                raise
+
+            return expense_replay_response(
+                existing,
+                fingerprint,
+            )
 
         return Response(
             expense_response(expense),
             status=status.HTTP_201_CREATED,
+            headers={
+                "Idempotency-Replayed": "false",
+            },
         )
 
 

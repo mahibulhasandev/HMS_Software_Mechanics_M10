@@ -914,6 +914,8 @@ def create_expense(
     description,
     expense_date=None,
     supplier_id=None,
+    idempotency_key=None,
+    request_fingerprint=None,
 ):
     """
     Create a draft hospital expense.
@@ -993,6 +995,8 @@ def create_expense(
         expense_category=category,
         account=account,
         supplier_id=supplier_id,
+        idempotency_key=idempotency_key,
+        request_fingerprint=request_fingerprint,
         approved_by_hospital_user_id=None,
         amount=expense_amount,
         expense_date=expense_date,
