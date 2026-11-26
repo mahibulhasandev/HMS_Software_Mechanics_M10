@@ -81,11 +81,17 @@ class InvoiceLifecycleTests(TestCase):
 
     # 1. Draft invoice becomes issued.
     def test_issue_invoice_success(self):
+
         self.add_item("500.00")
         self.add_item("300.00")
 
+        self.invoice.subtotal = Decimal("100.00")
         self.invoice.discount = Decimal("100.00")
-        self.invoice.save(update_fields=["discount"])
+        self.invoice.total = Decimal("0.00")
+
+        self.invoice.save(
+            update_fields=["subtotal", "discount", "total"]
+        )
 
         issue_invoice(
             invoice_id=self.invoice.id,
@@ -96,12 +102,16 @@ class InvoiceLifecycleTests(TestCase):
 
         self.assertEqual(self.invoice.status, "issued")
         self.assertEqual(
-            self.invoice.subtotal,
-            Decimal("800.00"),
+            self.invoice.subtotal, Decimal("800.00")
         )
         self.assertEqual(
-            self.invoice.total,
-            Decimal("700.00"),
+            self.invoice.discount, Decimal("100.00")
+        )
+        self.assertEqual(
+            self.invoice.total, Decimal("700.00")
+        )
+        self.assertEqual(
+            self.invoice.amount_paid, Decimal("0.00")
         )
 
     # 2. Empty invoice cannot be issued.
@@ -130,32 +140,77 @@ class InvoiceLifecycleTests(TestCase):
 
     # 4. Invalid discount blocks issuing.
     def test_issue_invalid_discount_rejected(self):
+
         self.add_item("100.00")
 
-        self.invoice.discount = Decimal("200.00")
-        self.invoice.save(update_fields=["discount"])
+        # The stored row is valid, but the actual item
+        # subtotal cannot support the stored discount.
 
-        with self.assertRaises(ValidationError):
+        self.invoice.subtotal = Decimal("200.00")
+        self.invoice.discount = Decimal("200.00")
+        self.invoice.total = Decimal("0.00")
+
+        self.invoice.save(
+            update_fields=["subtotal", "discount", "total"]
+        )
+
+        with self.assertRaisesMessage(
+            ValidationError,
+            "Discount cannot exceed subtotal.",
+        ):
+
             issue_invoice(
                 invoice_id=self.invoice.id,
                 hospital_id=self.hospital_id,
             )
 
         self.invoice.refresh_from_db()
+
         self.assertEqual(self.invoice.status, "draft")
+        self.assertEqual(
+            self.invoice.subtotal, Decimal("200.00")
+        )
+        self.assertEqual(
+            self.invoice.total, Decimal("0.00")
+        )
 
     # 5. Invoice with paid amount cannot be issued.
     def test_issue_with_paid_amount_rejected(self):
+
+        from unittest.mock import patch
+
         self.add_item()
 
-        self.invoice.amount_paid = Decimal("100.00")
-        self.invoice.save(update_fields=["amount_paid"])
+        # Simulate an inconsistent invoice returned to
+        # the service without persisting an invalid row.
 
-        with self.assertRaises(ValidationError):
-            issue_invoice(
-                invoice_id=self.invoice.id,
-                hospital_id=self.hospital_id,
+        self.invoice.amount_paid = Decimal("100.00")
+
+        with patch.object(
+            Invoice.objects,
+            "select_for_update",
+        ) as locked:
+
+            locked.return_value.get.return_value = (
+                self.invoice
             )
+
+            with self.assertRaisesMessage(
+                ValidationError,
+                "Cannot issue an invoice with payment history.",
+            ):
+
+                issue_invoice(
+                    invoice_id=self.invoice.id,
+                    hospital_id=self.hospital_id,
+                )
+
+        self.invoice.refresh_from_db()
+
+        self.assertEqual(self.invoice.status, "draft")
+        self.assertEqual(
+            self.invoice.amount_paid, Decimal("0.00")
+        )
 
     # 6. Payment history blocks issuing.
     def test_issue_with_payment_history_rejected(self):
@@ -201,20 +256,55 @@ class InvoiceLifecycleTests(TestCase):
 
     # 9. Paid, partial and voided invoices are rejected.
     def test_void_invalid_status_rejected(self):
-        for status in [
-            "partially_paid",
-            "paid",
-            "voided",
-        ]:
-            with self.subTest(status=status):
-                self.invoice.status = status
-                self.invoice.save(update_fields=["status"])
 
-                with self.assertRaises(ValidationError):
+        for status, paid in (
+
+            ("partially_paid", "100.00"),
+
+            ("paid", "500.00"),
+
+            ("voided", "0.00"),
+
+        ):
+
+            with self.subTest(status=status):
+
+                self.invoice.subtotal = Decimal("500.00")
+                self.invoice.discount = Decimal("0.00")
+                self.invoice.total = Decimal("500.00")
+                self.invoice.amount_paid = Decimal(paid)
+                self.invoice.status = status
+
+                self.invoice.save(
+                    update_fields=[
+                        "subtotal",
+                        "discount",
+                        "total",
+                        "amount_paid",
+                        "status",
+                    ]
+                )
+
+                with self.assertRaisesMessage(
+                    ValidationError,
+                    "Only draft or issued invoices can be voided.",
+                ):
+
                     void_invoice(
                         invoice_id=self.invoice.id,
                         hospital_id=self.hospital_id,
                     )
+
+                self.invoice.refresh_from_db()
+
+                self.assertEqual(
+                    self.invoice.status, status
+                )
+
+                self.assertEqual(
+                    self.invoice.amount_paid,
+                    Decimal(paid),
+                )
 
     # 10. Payment history prevents voiding.
     def test_void_with_payment_history_rejected(self):

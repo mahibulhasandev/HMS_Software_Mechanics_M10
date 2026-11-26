@@ -176,6 +176,38 @@ class Invoice(HospitalOwnedModel):
                 ),
                 name="ck_invoice_amounts_nonnegative"
             ),
+            models.CheckConstraint(
+                condition=models.Q(
+                    total=models.F("subtotal") - models.F("discount")
+                ),
+                name="ck_invoice_total_calculation",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(
+                    amount_paid__lte=models.F("total")
+                ),
+                name="ck_invoice_payment_limit",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        status__in=["draft", "issued", "voided"],
+                        amount_paid=0,
+                    )
+                    |
+                    models.Q(
+                        status="paid",
+                        amount_paid=models.F("total"),
+                    )
+                    |
+                    models.Q(
+                        status="partially_paid",
+                        amount_paid__gt=0,
+                        amount_paid__lt=models.F("total"),
+                    )
+                ),
+                name="ck_invoice_payment_status",
+            ),
         ]
 
     def __str__(self):

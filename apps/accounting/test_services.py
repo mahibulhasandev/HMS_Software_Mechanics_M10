@@ -47,15 +47,24 @@ class InvoiceCalculationTests(TestCase):
         )
 
     def test_subtotal_and_discount_calculation(self):
+
         self.add_item("200.00")
         self.add_item("100.00")
+
         self.add_item(
             "500.00",
             status=InvoiceItemStatus.VOIDED,
         )
 
+        # Initially valid invoice values. Recalculation
+        # must update the subtotal using active items.
+
+        self.invoice.subtotal = Decimal("200.00")
         self.invoice.discount = Decimal("50.00")
+        self.invoice.total = Decimal("150.00")
         self.invoice.amount_paid = Decimal("100.00")
+        self.invoice.status = "partially_paid"
+
         self.invoice.save()
 
         recalculate_invoice_totals(
@@ -66,12 +75,19 @@ class InvoiceCalculationTests(TestCase):
         self.invoice.refresh_from_db()
 
         self.assertEqual(
-            self.invoice.subtotal,
-            Decimal("300.00"),
+            self.invoice.subtotal, Decimal("300.00")
         )
         self.assertEqual(
-            self.invoice.total,
-            Decimal("250.00"),
+            self.invoice.discount, Decimal("50.00")
+        )
+        self.assertEqual(
+            self.invoice.total, Decimal("250.00")
+        )
+        self.assertEqual(
+            self.invoice.amount_paid, Decimal("100.00")
+        )
+        self.assertEqual(
+            self.invoice.status, "partially_paid"
         )
 
     def test_empty_invoice(self):
@@ -92,28 +108,73 @@ class InvoiceCalculationTests(TestCase):
         )
 
     def test_discount_exceeds_subtotal(self):
+
         self.add_item("100.00")
 
+        self.invoice.subtotal = Decimal("150.00")
         self.invoice.discount = Decimal("150.00")
-        self.invoice.save(update_fields=["discount"])
+        self.invoice.total = Decimal("0.00")
 
-        with self.assertRaises(ValidationError):
+        self.invoice.save(
+            update_fields=["subtotal", "discount", "total"]
+        )
+
+        with self.assertRaisesMessage(
+            ValidationError,
+            "Discount cannot exceed subtotal.",
+        ):
+
             recalculate_invoice_totals(
                 self.invoice.id,
                 self.hospital_id,
             )
+
+        self.invoice.refresh_from_db()
+
+        self.assertEqual(
+            self.invoice.subtotal, Decimal("150.00")
+        )
+        self.assertEqual(
+            self.invoice.total, Decimal("0.00")
+        )
 
     def test_paid_amount_exceeds_total(self):
+
         self.add_item("50.00")
 
+        self.invoice.subtotal = Decimal("100.00")
+        self.invoice.total = Decimal("100.00")
         self.invoice.amount_paid = Decimal("100.00")
-        self.invoice.save(update_fields=["amount_paid"])
+        self.invoice.status = "paid"
 
-        with self.assertRaises(ValidationError):
+        self.invoice.save(
+            update_fields=[
+                "subtotal",
+                "total",
+                "amount_paid",
+                "status",
+            ]
+        )
+
+        with self.assertRaisesMessage(
+            ValidationError,
+            "Invoice total cannot be less than amount paid.",
+        ):
+
             recalculate_invoice_totals(
                 self.invoice.id,
                 self.hospital_id,
             )
+
+        self.invoice.refresh_from_db()
+
+        self.assertEqual(
+            self.invoice.amount_paid, Decimal("100.00")
+        )
+        self.assertEqual(
+            self.invoice.total, Decimal("100.00")
+        )
+        self.assertEqual(self.invoice.status, "paid")
 
     def test_voided_invoice_cannot_recalculate(self):
         self.invoice.status = "voided"
@@ -219,29 +280,44 @@ class InvoiceItemCreationTests(TestCase):
 
     # Test 4: Atomic rollback
     def test_failed_calculation_rolls_back_item(self):
-        self.invoice.discount = Decimal("600.00")
-        self.invoice.save(update_fields=["discount"])
 
-        with self.assertRaises(ValidationError):
+        self.invoice.subtotal = Decimal("600.00")
+        self.invoice.discount = Decimal("600.00")
+        self.invoice.total = Decimal("0.00")
+
+        self.invoice.save(
+            update_fields=["subtotal", "discount", "total"]
+        )
+
+        before_count = InvoiceItem.objects.count()
+
+        with self.assertRaisesMessage(
+            ValidationError,
+            "Discount cannot exceed subtotal.",
+        ):
+
             self.add_item()
 
-        # Item must not be saved after failure.
         self.assertEqual(
             InvoiceItem.objects.count(),
-            0
+            before_count,
         )
 
         self.invoice.refresh_from_db()
 
-        self.assertEqual(
-            self.invoice.subtotal,
-            Decimal("0.00")
-        )
+        # The failed operation must preserve all
+        # original invoice values.
 
         self.assertEqual(
-            self.invoice.total,
-            Decimal("0.00")
+            self.invoice.subtotal, Decimal("600.00")
         )
+        self.assertEqual(
+            self.invoice.discount, Decimal("600.00")
+        )
+        self.assertEqual(
+            self.invoice.total, Decimal("0.00")
+        )
+        self.assertEqual(self.invoice.status, "draft")
 
     # Test 5: Wrong hospital
     def test_cross_hospital_item_creation_blocked(self):
