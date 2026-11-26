@@ -4,7 +4,7 @@ from django.contrib.auth import get_user_model
 from django.db import connection
 from django.test import TestCase
 
-from apps.accounting.models import Account, AccountingMembership
+from apps.accounting.models import Account, AccountingMembership, IncomeCategory, ExpenseCategory
 from apps.hospitals.models import Hospital
 
 
@@ -16,6 +16,8 @@ class AccountingHTTPTests(TestCase):
         with connection.cursor() as cursor:
             cursor.execute("GRANT USAGE ON SCHEMA public TO hms_app")
             cursor.execute("GRANT SELECT, INSERT, UPDATE ON accounts TO hms_app")
+            cursor.execute("GRANT SELECT, INSERT ON income_categories TO hms_app")
+            cursor.execute("GRANT SELECT, INSERT ON expense_categories TO hms_app")
 
         cls.hospital_a = Hospital.objects.create(
             name="HTTP Hospital A",
@@ -254,3 +256,197 @@ class AccountingHTTPTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 201, response.content)
+
+
+    def test_category_anonymous_denied(self):
+        for path in ("income-categories", "expense-categories"):
+            with self.subTest(path=path):
+                response = self.client.get(
+                    f"/api/accounting/{path}/"
+                )
+                self.assertEqual(response.status_code, 401)
+
+    def test_category_no_membership_denied(self):
+        self.client.force_login(self.no_membership)
+        for path in ("income-categories", "expense-categories"):
+            with self.subTest(path=path):
+                response = self.client.get(
+                    f"/api/accounting/{path}/"
+                )
+                self.assertEqual(response.status_code, 403)
+
+    def test_category_hospital_isolation(self):
+        for model in (IncomeCategory, ExpenseCategory):
+            model.objects.create(
+                hospital_id=self.hospital_a.pk,
+                name="CATEGORY_A",
+            )
+            model.objects.create(
+                hospital_id=self.hospital_b.pk,
+                name="CATEGORY_B",
+            )
+
+        for user, expected in (
+            (self.user_a, "CATEGORY_A"),
+            (self.user_b, "CATEGORY_B"),
+        ):
+            self.client.force_login(user)
+
+            for path, key in (
+                ("income-categories", "income_categories"),
+                ("expense-categories", "expense_categories"),
+            ):
+                with self.subTest(user=user.username, path=path):
+                    response = self.client.get(
+                        f"/api/accounting/{path}/",
+                        {"hospital_id": str(self.hospital_b.pk)},
+                        HTTP_X_HOSPITAL_ID=str(self.hospital_b.pk),
+                    )
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(
+                        [x["name"] for x in response.json()[key]],
+                        [expected],
+                    )
+
+    def test_category_admin_accountant_can_create(self):
+        for role in ("accountant", "admin"):
+            AccountingMembership.objects.filter(
+                user=self.user_a
+            ).update(role=role)
+
+            self.client.force_login(self.user_a)
+
+            for path, model in (
+                ("income-categories", IncomeCategory),
+                ("expense-categories", ExpenseCategory),
+            ):
+                with self.subTest(role=role, path=path):
+                    name = f"{role}_{path}"
+
+                    response = self.client.post(
+                        f"/api/accounting/{path}/",
+                        {"name": name},
+                        content_type="application/json",
+                    )
+
+                    self.assertEqual(
+                        response.status_code, 201, response.content
+                    )
+                    self.assertTrue(
+                        model.objects.filter(
+                            hospital_id=self.hospital_a.pk,
+                            name=name,
+                        ).exists()
+                    )
+
+    def test_category_staff_read_only(self):
+        self.client.force_login(self.staff)
+
+        for path in ("income-categories", "expense-categories"):
+            with self.subTest(path=path):
+                url = f"/api/accounting/{path}/"
+
+                self.assertEqual(
+                    self.client.get(url).status_code, 200
+                )
+                self.assertEqual(
+                    self.client.post(
+                        url,
+                        {"name": "STAFF_FORBIDDEN"},
+                        content_type="application/json",
+                    ).status_code,
+                    403,
+                )
+
+    def test_category_forged_hospital_id_rejected(self):
+        self.client.force_login(self.user_a)
+
+        for path, model in (
+            ("income-categories", IncomeCategory),
+            ("expense-categories", ExpenseCategory),
+        ):
+            with self.subTest(path=path):
+                name = f"FORGED_{path}"
+                response = self.client.post(
+                    f"/api/accounting/{path}/",
+                    {
+                        "name": name,
+                        "hospital_id": str(self.hospital_b.pk),
+                    },
+                    content_type="application/json",
+                )
+
+                self.assertEqual(response.status_code, 400)
+                self.assertFalse(
+                    model.objects.filter(name=name).exists()
+                )
+
+    def test_category_forged_header_ignored(self):
+        self.client.force_login(self.user_a)
+
+        for path, model in (
+            ("income-categories", IncomeCategory),
+            ("expense-categories", ExpenseCategory),
+        ):
+            with self.subTest(path=path):
+                name = f"HEADER_{path}"
+                response = self.client.post(
+                    f"/api/accounting/{path}/",
+                    {"name": name},
+                    content_type="application/json",
+                    HTTP_X_HOSPITAL_ID=str(self.hospital_b.pk),
+                )
+
+                self.assertEqual(
+                    response.status_code, 201, response.content
+                )
+                self.assertTrue(
+                    model.objects.filter(
+                        hospital_id=self.hospital_a.pk,
+                        name=name,
+                    ).exists()
+                )
+
+    def test_duplicate_expense_category_rejected(self):
+        ExpenseCategory.objects.create(
+            hospital_id=self.hospital_b.pk,
+            name="Electricity",
+        )
+
+        self.client.force_login(self.user_a)
+        url = "/api/accounting/expense-categories/"
+
+        first = self.client.post(
+            url,
+            {"name": "Electricity"},
+            content_type="application/json",
+        )
+        second = self.client.post(
+            url,
+            {"name": "Electricity"},
+            content_type="application/json",
+        )
+
+        self.assertEqual(first.status_code, 201, first.content)
+        self.assertEqual(second.status_code, 400, second.content)
+        self.assertEqual(
+            ExpenseCategory.objects.filter(
+                hospital_id=self.hospital_a.pk,
+                name="Electricity",
+            ).count(),
+            1,
+        )
+
+    def test_income_category_invalid_department_uuid(self):
+        self.client.force_login(self.user_a)
+
+        response = self.client.post(
+            "/api/accounting/income-categories/",
+            {
+                "name": "Invalid Department",
+                "department_id": "not-a-uuid",
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
