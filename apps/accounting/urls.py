@@ -57,3 +57,24 @@ urlpatterns += [
         name="accounting-expense-detail",
     ),
 ]
+
+
+# TRANSACTION LEDGER API
+
+from .transaction_api import (
+    TransactionListAPIView,
+    TransactionDetailAPIView,
+)
+
+urlpatterns += [
+    path(
+        "transactions/",
+        TransactionListAPIView.as_view(),
+        name="accounting-transactions",
+    ),
+    path(
+        "transactions/<uuid:transaction_id>/",
+        TransactionDetailAPIView.as_view(),
+        name="accounting-transaction-detail",
+    ),
+]
