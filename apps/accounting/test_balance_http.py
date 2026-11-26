@@ -12,6 +12,8 @@ from apps.accounting.models import (
 
 from apps.accounting import test_transaction_http
 
+from apps.accounting._test_integrity_helpers import allow_invalid_reversal_fixture
+
 
 class BalanceHTTPTests(TestCase):
 
@@ -297,10 +299,11 @@ class BalanceHTTPTests(TestCase):
     # Test 7
     def test_invalid_reversal_amount_rejected(self):
 
-        self.add_reversal(
-            self.income,
-            amount="999.00",
-        )
+        with allow_invalid_reversal_fixture():
+            self.add_reversal(
+                self.income,
+                amount="999.00",
+            )
 
         self.client.force_login(self.user_a)
 
@@ -320,10 +323,11 @@ class BalanceHTTPTests(TestCase):
     # Test 8
     def test_invalid_reversal_account_rejected(self):
 
-        self.add_reversal(
-            self.income,
-            account=self.account_a2,
-        )
+        with allow_invalid_reversal_fixture():
+            self.add_reversal(
+                self.income,
+                account=self.account_a2,
+            )
 
         self.client.force_login(self.user_a)
 

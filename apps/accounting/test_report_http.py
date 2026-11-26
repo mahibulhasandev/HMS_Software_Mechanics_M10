@@ -1,4 +1,4 @@
-﻿from datetime import timedelta
+from datetime import timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -6,6 +6,8 @@ from django.test import TestCase
 
 from apps.accounting.models import Expense, Transaction
 from apps.accounting import test_transaction_http
+
+from apps.accounting._test_integrity_helpers import allow_invalid_reversal_fixture
 
 
 class FinancialReportHTTPTests(TestCase):
@@ -518,10 +520,11 @@ class FinancialReportHTTPTests(TestCase):
     # Test 13
     def test_invalid_reversal_rejected(self):
 
-        self.add_reversal(
-            self.income,
-            amount="999.00",
-        )
+        with allow_invalid_reversal_fixture():
+            self.add_reversal(
+                self.income,
+                amount="999.00",
+            )
 
         self.client.force_login(self.user_a)
 

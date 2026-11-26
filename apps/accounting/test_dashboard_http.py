@@ -1,4 +1,4 @@
-﻿from datetime import timedelta
+from datetime import timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -17,6 +17,8 @@ from apps.accounting.models import (
 
 from apps.accounting import test_transaction_http
 from apps.hospitals.models import Hospital
+
+from apps.accounting._test_integrity_helpers import allow_invalid_reversal_fixture
 
 
 class DashboardHTTPTests(TestCase):
@@ -617,15 +619,16 @@ class DashboardHTTPTests(TestCase):
     # Test 11
     def test_invalid_ledger_rejected(self):
 
-        Transaction.objects.create(
-            hospital_id=self.hospital_a.pk,
-            account=self.account_a,
-            reversed_transaction=self.income,
-            transaction_type="reversal",
-            amount=Decimal("999.00"),
-            transaction_date=self.today,
-            description="Invalid dashboard reversal fixture",
-        )
+        with allow_invalid_reversal_fixture():
+            Transaction.objects.create(
+                hospital_id=self.hospital_a.pk,
+                account=self.account_a,
+                reversed_transaction=self.income,
+                transaction_type="reversal",
+                amount=Decimal("999.00"),
+                transaction_date=self.today,
+                description="Invalid dashboard reversal fixture",
+            )
 
         self.client.force_login(self.user_a)
 

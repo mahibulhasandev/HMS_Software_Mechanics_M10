@@ -27,6 +27,8 @@ from apps.accounting.reporting import (
     get_account_wise_summary,
 )
 
+from apps.accounting._test_integrity_helpers import allow_invalid_reversal_fixture
+
 
 class FinancialReportingTests(TestCase):
 
@@ -280,15 +282,16 @@ class FinancialReportingTests(TestCase):
             payment=payment,
         )
 
-        Transaction.objects.create(
-            hospital_id=self.hospital_id,
-            account=self.account,
-            reversed_transaction=original_ledger,
-            transaction_type="reversal",
-            amount=Decimal("100.00"),
-            transaction_date=self.today,
-            description="Test reversal",
-        )
+        with allow_invalid_reversal_fixture():
+            Transaction.objects.create(
+                hospital_id=self.hospital_id,
+                account=self.account,
+                reversed_transaction=original_ledger,
+                transaction_type="reversal",
+                amount=Decimal("100.00"),
+                transaction_date=self.today,
+                description="Test reversal",
+            )
 
         with self.assertRaises(ValidationError):
             self.report()
@@ -439,15 +442,16 @@ class FinancialReportingTests(TestCase):
             payment=payment,
         )
 
-        Transaction.objects.create(
-            hospital_id=self.hospital_id,
-            account=self.account,
-            reversed_transaction=original_ledger,
-            transaction_type="reversal",
-            amount=Decimal("100.00"),
-            transaction_date=self.today,
-            description="Test account reversal",
-        )
+        with allow_invalid_reversal_fixture():
+            Transaction.objects.create(
+                hospital_id=self.hospital_id,
+                account=self.account,
+                reversed_transaction=original_ledger,
+                transaction_type="reversal",
+                amount=Decimal("100.00"),
+                transaction_date=self.today,
+                description="Test account reversal",
+            )
 
         with self.assertRaises(ValidationError):
             self.account_report()
