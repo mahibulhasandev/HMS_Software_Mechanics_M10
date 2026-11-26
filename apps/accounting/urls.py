@@ -78,3 +78,24 @@ urlpatterns += [
         name="accounting-transaction-detail",
     ),
 ]
+
+
+# ACCOUNT BALANCE API
+
+from .balance_api import (
+    AccountBalanceListAPIView,
+    AccountBalanceDetailAPIView,
+)
+
+urlpatterns += [
+    path(
+        "accounts/balances/",
+        AccountBalanceListAPIView.as_view(),
+        name="accounting-account-balances",
+    ),
+    path(
+        "accounts/<uuid:account_id>/balance/",
+        AccountBalanceDetailAPIView.as_view(),
+        name="accounting-account-balance-detail",
+    ),
+]
