@@ -1,3 +1,4 @@
+from .payment_api import PaymentCreateAPIView, RefundCreateAPIView
 from .invoice_actions_api import InvoiceItemCreateAPIView, InvoiceIssueAPIView, InvoiceVoidAPIView
 from .invoice_api import InvoiceListAPIView
 from .category_api import IncomeCategoryListAPIView, ExpenseCategoryListAPIView
@@ -6,6 +7,8 @@ from django.urls import path
 from .api_views import AccountListAPIView
 
 urlpatterns = [
+    path("refunds/", RefundCreateAPIView.as_view(), name="accounting-refunds"),
+    path("payments/", PaymentCreateAPIView.as_view(), name="accounting-payments"),
     path("invoices/<uuid:invoice_id>/void/", InvoiceVoidAPIView.as_view(), name="accounting-invoice-void"),
     path("invoices/<uuid:invoice_id>/issue/", InvoiceIssueAPIView.as_view(), name="accounting-invoice-issue"),
     path("invoices/<uuid:invoice_id>/items/", InvoiceItemCreateAPIView.as_view(), name="accounting-invoice-add-item"),
