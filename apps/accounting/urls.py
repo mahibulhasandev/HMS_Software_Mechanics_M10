@@ -17,3 +17,31 @@ urlpatterns = [
     path("income-categories/", IncomeCategoryListAPIView.as_view(), name="accounting-income-categories"),
     path("accounts/", AccountListAPIView.as_view(), name="accounting-accounts"),
 ]
+
+
+# EXPENSE MANAGEMENT API
+from .expense_api import (
+    ExpenseCreateAPIView,
+    ExpenseActionAPIView,
+)
+
+urlpatterns += [
+    path(
+        "expenses/",
+        ExpenseCreateAPIView.as_view(),
+        name="accounting-expense-create",
+    ),
+] + [
+    path(
+        f"expenses/<uuid:expense_id>/{action}/",
+        ExpenseActionAPIView.as_view(action=action),
+        name=f"accounting-expense-{action}",
+    )
+    for action in (
+        "submit",
+        "approve",
+        "reject",
+        "pay",
+        "reverse",
+    )
+]
