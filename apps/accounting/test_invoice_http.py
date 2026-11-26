@@ -24,7 +24,7 @@ class InvoiceListHTTPTests(TestCase):
                 "GRANT USAGE ON SCHEMA public TO hms_app"
             )
             cursor.execute(
-                "GRANT SELECT, UPDATE ON invoices TO hms_app"
+                "GRANT SELECT, INSERT, UPDATE ON invoices TO hms_app"
             )
             cursor.execute(
                 "GRANT SELECT, INSERT ON invoice_items TO hms_app"
@@ -318,3 +318,162 @@ class InvoiceListHTTPTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 400, response.content)
+
+
+    def test_create_invoice_actor_identity(self):
+        for user, hospital, number in (
+            (self.user_a, self.hospital_a, "NEW-INV-A"),
+            (self.user_b, self.hospital_b, "NEW-INV-B"),
+        ):
+            with self.subTest(user=user.username):
+                self.client.force_login(user)
+
+                response = self.client.post(
+                    self.URL,
+                    {"invoice_number": number},
+                    content_type="application/json",
+                )
+
+                self.assertEqual(
+                    response.status_code, 201, response.content
+                )
+
+                invoice = Invoice.objects.get(
+                    invoice_number=number
+                )
+                membership = AccountingMembership.objects.get(
+                    user=user
+                )
+
+                self.assertEqual(
+                    invoice.hospital_id, hospital.pk
+                )
+                self.assertEqual(
+                    invoice.created_by_hospital_user_id,
+                    membership.actor_uuid,
+                )
+                self.assertEqual(
+                    invoice.status, InvoiceStatus.DRAFT
+                )
+                self.assertEqual(
+                    invoice.subtotal, Decimal("0.00")
+                )
+                self.assertEqual(
+                    invoice.total, Decimal("0.00")
+                )
+                self.assertEqual(
+                    invoice.amount_paid, Decimal("0.00")
+                )
+
+    def test_admin_can_create_invoice(self):
+        AccountingMembership.objects.filter(
+            user=self.user_a
+        ).update(role="admin")
+
+        self.client.force_login(self.user_a)
+
+        response = self.client.post(
+            self.URL,
+            {"invoice_number": "ADMIN-INV-001"},
+            content_type="application/json",
+        )
+
+        self.assertEqual(
+            response.status_code, 201, response.content
+        )
+
+    def test_staff_cannot_create_invoice(self):
+        self.client.force_login(self.staff)
+
+        response = self.client.post(
+            self.URL,
+            {"invoice_number": "STAFF-INV"},
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(
+            Invoice.objects.filter(
+                invoice_number="STAFF-INV"
+            ).exists()
+        )
+
+    def test_no_membership_cannot_create_invoice(self):
+        self.client.force_login(self.no_membership)
+
+        response = self.client.post(
+            self.URL,
+            {"invoice_number": "NO-MEMBERSHIP-INV"},
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_forged_invoice_fields_rejected(self):
+        self.client.force_login(self.user_a)
+
+        forbidden_fields = {
+            "hospital_id": str(self.hospital_b.pk),
+            "created_by_hospital_user_id": str(uuid4()),
+            "patient_id": str(uuid4()),
+            "patient_visit_id": str(uuid4()),
+            "subtotal": "9999.00",
+            "total": "9999.00",
+            "amount_paid": "9999.00",
+            "status": "paid",
+            "issued_at": timezone.now().isoformat(),
+        }
+
+        for field, value in forbidden_fields.items():
+            with self.subTest(field=field):
+                response = self.client.post(
+                    self.URL,
+                    {
+                        "invoice_number": "FORGED-INV",
+                        field: value,
+                    },
+                    content_type="application/json",
+                )
+
+                self.assertEqual(
+                    response.status_code, 400, response.content
+                )
+
+        self.assertFalse(
+            Invoice.objects.filter(
+                invoice_number="FORGED-INV"
+            ).exists()
+        )
+
+    def test_blank_invoice_number_rejected(self):
+        self.client.force_login(self.user_a)
+
+        response = self.client.post(
+            self.URL,
+            {"invoice_number": "   "},
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_forged_hospital_header_cannot_change_invoice_owner(self):
+        self.client.force_login(self.user_a)
+
+        response = self.client.post(
+            self.URL,
+            {"invoice_number": "HEADER-INV-A"},
+            content_type="application/json",
+            HTTP_X_HOSPITAL_ID=str(self.hospital_b.pk),
+        )
+
+        self.assertEqual(
+            response.status_code, 201, response.content
+        )
+
+        invoice = Invoice.objects.get(
+            invoice_number="HEADER-INV-A"
+        )
+
+        self.assertEqual(
+            invoice.hospital_id, self.hospital_a.pk
+        )

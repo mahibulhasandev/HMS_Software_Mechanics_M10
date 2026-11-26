@@ -1,4 +1,4 @@
-﻿from django.db import connection, transaction
+from django.db import connection, transaction
 from django.http import JsonResponse
 
 from .models import AccountingMembership
@@ -57,6 +57,7 @@ class AccountingHospitalContextMiddleware:
 
                     request.accounting_hospital_id = membership.hospital_id
                     request.accounting_role = membership.role
+                    request.accounting_actor_uuid = membership.actor_uuid
 
                     return self.get_response(request)
 

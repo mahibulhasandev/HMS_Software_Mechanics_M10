@@ -1,3 +1,4 @@
+from uuid import uuid4
 
 import uuid
 from django.db import models
@@ -749,6 +750,12 @@ class AccountingMembership(models.Model):
     )
 
     is_active = models.BooleanField(default=True)
+
+    actor_uuid = models.UUIDField(
+        default=uuid4,
+        unique=True,
+        editable=False,
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
 
