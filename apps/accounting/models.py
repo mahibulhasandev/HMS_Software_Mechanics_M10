@@ -1,6 +1,7 @@
 
 import uuid
 from django.db import models
+from django.conf import settings
 
 
 # ============================================================
@@ -718,3 +719,52 @@ class Transaction(HospitalOwnedModel):
 
     def __str__(self):
         return f"{self.transaction_type}: {self.amount}"
+# ============================================================
+# 9. ACCOUNTING MEMBERSHIP
+# ============================================================
+
+
+class AccountingMembership(models.Model):
+
+    class Role(models.TextChoices):
+        ADMIN = "admin", "Admin"
+        ACCOUNTANT = "accountant", "Accountant"
+        STAFF = "staff", "Staff"
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="accounting_membership_record",
+    )
+
+    hospital = models.ForeignKey(
+        "hospitals.Hospital",
+        on_delete=models.PROTECT,
+        related_name="accounting_memberships",
+    )
+
+    role = models.CharField(
+        max_length=20,
+        choices=Role.choices,
+    )
+
+    is_active = models.BooleanField(default=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "accounting_memberships"
+
+        indexes = [
+            models.Index(
+                fields=["hospital", "is_active"],
+                name="ix_acct_mem_hosp_active",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.user_id} - "
+            f"{self.hospital_id} - "
+            f"{self.role}"
+        )
