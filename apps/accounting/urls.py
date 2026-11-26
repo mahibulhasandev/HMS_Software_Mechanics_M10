@@ -99,3 +99,16 @@ urlpatterns += [
         name="accounting-account-balance-detail",
     ),
 ]
+
+
+# FINANCIAL REPORTING API
+
+from .report_api import FinancialSummaryAPIView
+
+urlpatterns += [
+    path(
+        "reports/financial-summary/",
+        FinancialSummaryAPIView.as_view(),
+        name="accounting-financial-summary",
+    ),
+]

@@ -1,4 +1,4 @@
-﻿from decimal import Decimal
+from decimal import Decimal
 
 from django.db.models import (
     Case,
@@ -39,7 +39,7 @@ class BalancePagination(LimitOffsetPagination):
     max_limit = 100
 
 
-def accounts_with_balances(hospital_id):
+def ledger_expressions():
 
     money = DecimalField(
         max_digits=30,
@@ -115,6 +115,13 @@ def accounts_with_balances(hospital_id):
         default=Value(1),
         output_field=IntegerField(),
     )
+
+    return money, zero, signed_amount, invalid_entry
+
+
+def accounts_with_balances(hospital_id):
+
+    money, zero, signed_amount, invalid_entry = ledger_expressions()
 
     ledger = Transaction.objects.filter(
         hospital_id=hospital_id,
