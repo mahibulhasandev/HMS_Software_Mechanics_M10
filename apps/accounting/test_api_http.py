@@ -1,4 +1,4 @@
-﻿from base64 import b64encode
+from base64 import b64encode
 
 from django.contrib.auth import get_user_model
 from django.db import connection
@@ -15,7 +15,7 @@ class AccountingHTTPTests(TestCase):
     def setUpTestData(cls):
         with connection.cursor() as cursor:
             cursor.execute("GRANT USAGE ON SCHEMA public TO hms_app")
-            cursor.execute("GRANT SELECT ON accounts TO hms_app")
+            cursor.execute("GRANT SELECT, INSERT, UPDATE ON accounts TO hms_app")
 
         cls.hospital_a = Hospital.objects.create(
             name="HTTP Hospital A",
@@ -130,3 +130,127 @@ class AccountingHTTPTests(TestCase):
             response.json()["hospital_id"],
             str(self.hospital_a.pk),
         )
+
+
+    def account_payload(self, number):
+        return {
+            "name": f"New Account {number}",
+            "account_type": "cash",
+            "account_number": number,
+            "opening_balance": "0.00",
+            "is_active": True,
+        }
+
+    def test_accountant_can_create_account(self):
+        self.client.force_login(self.user_a)
+
+        response = self.client.post(
+            self.URL,
+            self.account_payload("NEW-A-001"),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.content)
+        account = Account.objects.get(account_number="NEW-A-001")
+        self.assertEqual(account.hospital_id, self.hospital_a.pk)
+
+    def test_admin_can_create_account(self):
+        AccountingMembership.objects.filter(
+            user=self.user_a
+        ).update(role="admin")
+
+        self.client.force_login(self.user_a)
+
+        response = self.client.post(
+            self.URL,
+            self.account_payload("NEW-ADMIN-001"),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.content)
+
+    def test_staff_cannot_create_account(self):
+        self.client.force_login(self.staff)
+
+        response = self.client.post(
+            self.URL,
+            self.account_payload("STAFF-BLOCKED"),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(
+            Account.objects.filter(
+                account_number="STAFF-BLOCKED"
+            ).exists()
+        )
+
+    def test_forged_hospital_id_rejected(self):
+        self.client.force_login(self.user_a)
+        payload = self.account_payload("FORGED-HOSPITAL")
+        payload["hospital_id"] = str(self.hospital_b.pk)
+
+        response = self.client.post(
+            self.URL,
+            payload,
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertFalse(
+            Account.objects.filter(
+                account_number="FORGED-HOSPITAL"
+            ).exists()
+        )
+
+    def test_forged_hospital_header_ignored(self):
+        self.client.force_login(self.user_a)
+
+        response = self.client.post(
+            self.URL,
+            self.account_payload("HEADER-A-001"),
+            content_type="application/json",
+            HTTP_X_HOSPITAL_ID=str(self.hospital_b.pk),
+        )
+
+        self.assertEqual(response.status_code, 201, response.content)
+        account = Account.objects.get(account_number="HEADER-A-001")
+        self.assertEqual(account.hospital_id, self.hospital_a.pk)
+
+    def test_post_without_csrf_is_rejected(self):
+        from django.test import Client
+
+        csrf_client = Client(enforce_csrf_checks=True)
+        csrf_client.force_login(self.user_a)
+
+        response = csrf_client.post(
+            self.URL,
+            self.account_payload("NO-CSRF"),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_post_with_valid_csrf_succeeds(self):
+        from django.conf import settings
+        from django.middleware.csrf import get_token
+        from django.test import Client, RequestFactory
+
+        csrf_client = Client(enforce_csrf_checks=True)
+        csrf_client.force_login(self.user_a)
+
+        request = RequestFactory().get("/")
+        csrf_token = get_token(request)
+
+        csrf_client.cookies[settings.CSRF_COOKIE_NAME] = (
+            request.META["CSRF_COOKIE"]
+        )
+
+        response = csrf_client.post(
+            self.URL,
+            self.account_payload("VALID-CSRF"),
+            content_type="application/json",
+            HTTP_X_CSRFTOKEN=csrf_token,
+        )
+
+        self.assertEqual(response.status_code, 201, response.content)
