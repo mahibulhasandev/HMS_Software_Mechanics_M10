@@ -8,8 +8,13 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError, PermissionDenied, NotFound
 
-from apps.clinic.models import DoctorSchedule, Appointment
-from apps.clinic.serializers import DoctorScheduleSerializer, AppointmentSerializer
+from apps.clinic.models import DoctorSchedule, Appointment, Consultation, Diagnosis
+from apps.clinic.serializers import (
+    DoctorScheduleSerializer,
+    AppointmentSerializer,
+    ConsultationSerializer,
+    DiagnosisSerializer,
+)
 from apps.clinic.permissions import (
     IsClinicStaff,
     IsDoctor,
@@ -477,3 +482,281 @@ class DoctorAvailabilityView(viewsets.ViewSet):
             "total_available_slots": len(available_slots),
             "available_slots": available_slots,
         })
+
+
+class ConsultationViewSet(viewsets.ModelViewSet):
+    """
+    Consultation Management API:
+    - Lists and retrieves consultations scoped to the authorized hospital.
+    - Receptionists are strictly forbidden from accessing clinical notes.
+    - Doctors can only create consultations for their assigned patient visits and view/manage their own consultations.
+    - Hospital Admins and Nurses have view-only access across the hospital.
+    - Supports custom action 'complete' to finalize clinical documentation.
+    """
+    serializer_class = ConsultationSerializer
+    authentication_classes = [SessionAuthentication]
+    permission_classes = [IsAuthenticated, IsClinicStaff]
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = Consultation.objects.select_related(
+            "hospital",
+            "doctor",
+            "patient_visit",
+            "patient_visit__patient",
+            "appointment",
+        ).prefetch_related("diagnoses").all()
+
+        hospital_id = get_hospital_id_from_request(self.request, self)
+        if not hospital_id and not user.is_superuser:
+            return qs.none()
+
+        if user.is_superuser:
+            if hospital_id:
+                return qs.filter(hospital_id=hospital_id)
+            return qs
+
+        employee = get_active_employee_for_hospital(user, hospital_id)
+        if not employee:
+            return qs.none()
+
+        # Receptionist is strictly forbidden from viewing consultations / clinical notes
+        if employee.role == "receptionist":
+            raise PermissionDenied("Reception staff cannot access medical consultations.")
+
+        qs = qs.filter(hospital_id=hospital_id)
+
+        # Doctors see only their own consultations
+        if employee.role == "doctor":
+            try:
+                doctor_profile = Doctor.objects.get(employee=employee, hospital_id=hospital_id)
+                return qs.filter(doctor=doctor_profile)
+            except Doctor.DoesNotExist:
+                return qs.none()
+
+        # Admin and Nurse can view consultations for clinical oversight
+        return qs
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        target_hospital = serializer.validated_data.get("hospital")
+        target_doctor = serializer.validated_data.get("doctor")
+        patient_visit = serializer.validated_data.get("patient_visit")
+        appointment = serializer.validated_data.get("appointment")
+
+        if not user.is_superuser:
+            employee = get_active_employee_for_hospital(user, target_hospital.id)
+            if not employee:
+                raise PermissionDenied("You are not an authorized staff member for this hospital.")
+
+            # Only Doctors can conduct/create consultations
+            if employee.role != "doctor":
+                raise PermissionDenied(f"Role '{employee.role}' cannot create clinical consultations. Only doctors can.")
+
+            # Doctor can only create consultations for their own doctor profile
+            if not hasattr(target_doctor, "employee") or target_doctor.employee_id != employee.id:
+                raise PermissionDenied("Doctors can only create consultations for their own doctor profile.")
+
+        # BIZ-AUD-01: Concurrency Protection on Consultation Creation
+        # Lock PatientVisit with select_for_update inside an atomic transaction
+        # Re-check for duplicate consultation under the row lock to prevent race conditions
+        with transaction.atomic():
+            if patient_visit:
+                locked_visit = PatientVisit.objects.select_for_update().get(pk=patient_visit.pk)
+                if locked_visit.hospital_id != target_hospital.id:
+                    raise ValidationError({"patient_visit": "Patient visit does not belong to the selected hospital."})
+
+                if Consultation.objects.filter(hospital=target_hospital, patient_visit=locked_visit).exists():
+                    raise ValidationError({"patient_visit": "A consultation already exists for this patient visit."})
+
+                # Update patient visit status to IN_PROGRESS if currently REGISTERED
+                if locked_visit.status == PatientVisit.Status.REGISTERED:
+                    locked_visit.status = PatientVisit.Status.IN_PROGRESS
+                    locked_visit.save(update_fields=["status", "updated_at"])
+
+            # If appointment is linked, verify doctor assignment
+            if appointment and not user.is_superuser:
+                if appointment.doctor_id != target_doctor.id:
+                    raise PermissionDenied("Cannot create consultation for an appointment assigned to another doctor.")
+
+            serializer.save()
+
+    def perform_update(self, serializer):
+        user = self.request.user
+        instance = serializer.instance
+        hospital_id = instance.hospital_id
+
+        if not user.is_superuser:
+            employee = get_active_employee_for_hospital(user, hospital_id)
+            if not employee:
+                raise PermissionDenied("You are not authorized for this hospital.")
+
+            if employee.role != "doctor":
+                raise PermissionDenied("Only doctors can update clinical consultations.")
+
+            # Doctor ownership enforcement
+            if not hasattr(instance.doctor, "employee") or instance.doctor.employee_id != employee.id:
+                raise PermissionDenied("Doctors can only modify their own consultations.")
+
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        user = self.request.user
+        if not user.is_superuser:
+            raise PermissionDenied("Clinical consultations cannot be deleted by hospital staff.")
+        instance.delete()
+
+    @action(detail=True, methods=["post"], url_path="complete")
+    def complete(self, request, pk=None):
+        """
+        Marks consultation as completed:
+        - Locks consultation and linked appointment/visit in an atomic transaction.
+        - Transitions Appointment to COMPLETED.
+        - Transitions PatientVisit to COMPLETED.
+        """
+        user = request.user
+        hospital_id = get_hospital_id_from_request(request, self)
+        if not hospital_id:
+            raise ValidationError({"hospital": "Hospital context is required."})
+
+        consultation = self.get_object()
+
+        if not user.is_superuser:
+            employee = get_active_employee_for_hospital(user, hospital_id)
+            if not employee:
+                raise PermissionDenied("You are not authorized for this hospital.")
+
+            if employee.role != "doctor":
+                raise PermissionDenied("Only doctors can complete consultations.")
+
+            if not hasattr(consultation.doctor, "employee") or consultation.doctor.employee_id != employee.id:
+                raise PermissionDenied("Doctors can only complete their own consultations.")
+
+        with transaction.atomic():
+            # Lock consultation, appointment, and visit
+            locked_consultation = Consultation.objects.select_for_update().get(pk=consultation.pk)
+
+            # Update linked Appointment
+            if locked_consultation.appointment:
+                appt = locked_consultation.appointment
+                if appt.status not in [Appointment.Status.CANCELLED, Appointment.Status.NO_SHOW]:
+                    appt.status = Appointment.Status.COMPLETED
+                    appt.save(update_fields=["status", "updated_at"])
+
+            # Update linked PatientVisit
+            if locked_consultation.patient_visit:
+                visit = locked_consultation.patient_visit
+                if visit.status != PatientVisit.Status.CANCELLED:
+                    visit.status = PatientVisit.Status.COMPLETED
+                    visit.save(update_fields=["status", "updated_at"])
+
+        serializer = self.get_serializer(locked_consultation)
+        return Response({
+            "consultation": serializer.data,
+            "detail": "Consultation completed successfully.",
+        }, status=status.HTTP_200_OK)
+
+
+class DiagnosisViewSet(viewsets.ModelViewSet):
+    """
+    Diagnosis Management API:
+    - Lists, retrieves, creates, updates, and deletes diagnoses.
+    - Tenant-scoped to the active hospital.
+    - Only doctors can manage diagnoses for their consultations.
+    - Non-clinical staff (receptionists) are forbidden.
+    - Diagnoses on completed consultations cannot be modified.
+    """
+    serializer_class = DiagnosisSerializer
+    authentication_classes = [SessionAuthentication]
+    permission_classes = [IsAuthenticated, IsClinicStaff]
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = Diagnosis.objects.select_related("hospital", "consultation", "consultation__doctor").all()
+
+        hospital_id = get_hospital_id_from_request(self.request, self)
+        if not hospital_id and not user.is_superuser:
+            return qs.none()
+
+        if user.is_superuser:
+            if hospital_id:
+                return qs.filter(hospital_id=hospital_id)
+            return qs
+
+        employee = get_active_employee_for_hospital(user, hospital_id)
+        if not employee:
+            return qs.none()
+
+        if employee.role == "receptionist":
+            raise PermissionDenied("Reception staff cannot access diagnosis data.")
+
+        qs = qs.filter(hospital_id=hospital_id)
+
+        # Doctors see diagnoses for their own consultations
+        if employee.role == "doctor":
+            try:
+                doctor_profile = Doctor.objects.get(employee=employee, hospital_id=hospital_id)
+                return qs.filter(consultation__doctor=doctor_profile)
+            except Doctor.DoesNotExist:
+                return qs.none()
+
+        # Admin and Nurse can view
+        return qs
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        target_hospital = serializer.validated_data.get("hospital")
+        consultation = serializer.validated_data.get("consultation")
+
+        if not user.is_superuser:
+            employee = get_active_employee_for_hospital(user, target_hospital.id)
+            if not employee:
+                raise PermissionDenied("You are not an authorized staff member for this hospital.")
+
+            if employee.role != "doctor":
+                raise PermissionDenied("Only doctors can record diagnoses.")
+
+            # Doctor can only add diagnosis to their own consultation
+            if not hasattr(consultation.doctor, "employee") or consultation.doctor.employee_id != employee.id:
+                raise PermissionDenied("Doctors can only record diagnoses for their own consultations.")
+
+        serializer.save()
+
+    def perform_update(self, serializer):
+        user = self.request.user
+        instance = serializer.instance
+        consultation = instance.consultation
+
+        if not user.is_superuser:
+            employee = get_active_employee_for_hospital(user, instance.hospital_id)
+            if not employee:
+                raise PermissionDenied("You are not authorized for this hospital.")
+
+            if employee.role != "doctor":
+                raise PermissionDenied("Only doctors can modify diagnoses.")
+
+            if not hasattr(consultation.doctor, "employee") or consultation.doctor.employee_id != employee.id:
+                raise PermissionDenied("Doctors can only modify diagnoses on their own consultations.")
+
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        user = self.request.user
+        consultation = instance.consultation
+
+        # SEC-AUD-02: Block diagnosis deletion on completed consultation
+        if consultation.is_completed:
+            raise PermissionDenied("Cannot delete diagnosis from a completed consultation.")
+
+        if not user.is_superuser:
+            employee = get_active_employee_for_hospital(user, instance.hospital_id)
+            if not employee:
+                raise PermissionDenied("You are not authorized for this hospital.")
+
+            if employee.role != "doctor":
+                raise PermissionDenied("Only doctors can delete diagnoses.")
+
+            if not hasattr(consultation.doctor, "employee") or consultation.doctor.employee_id != employee.id:
+                raise PermissionDenied("Doctors can only delete diagnoses from their own consultations.")
+
+        instance.delete()
