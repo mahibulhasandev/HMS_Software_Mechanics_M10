@@ -2,7 +2,7 @@ import datetime
 from django.utils import timezone
 from rest_framework import serializers
 
-from apps.clinic.models import DoctorSchedule, Appointment
+from apps.clinic.models import DoctorSchedule, Appointment, Consultation, Diagnosis
 from apps.doctors.models import Doctor
 from apps.patients.models import Patient, PatientVisit
 
@@ -237,6 +237,197 @@ class AppointmentSerializer(serializers.ModelSerializer):
                 if not cancellation_reason or not cancellation_reason.strip():
                     raise serializers.ValidationError({
                         "cancellation_reason": "Cancellation reason is required when cancelling an appointment."
+                    })
+
+        return attrs
+
+
+class DiagnosisSerializer(serializers.ModelSerializer):
+    diagnosis_type_display = serializers.CharField(source="get_diagnosis_type_display", read_only=True)
+
+    class Meta:
+        model = Diagnosis
+        fields = [
+            "id",
+            "hospital",
+            "consultation",
+            "diagnosis_name",
+            "icd_code",
+            "diagnosis_type",
+            "diagnosis_type_display",
+            "notes",
+            "created_at",
+        ]
+        read_only_fields = ["id", "created_at"]
+
+    def validate_diagnosis_type(self, value):
+        if value not in Diagnosis.DiagnosisType.values:
+            raise serializers.ValidationError(
+                f"Invalid diagnosis type '{value}'. Choices are: {Diagnosis.DiagnosisType.values}"
+            )
+        return value
+
+    def validate(self, attrs):
+        hospital = attrs.get("hospital", getattr(self.instance, "hospital", None))
+        consultation = attrs.get("consultation", getattr(self.instance, "consultation", None))
+
+        if not hospital:
+            raise serializers.ValidationError({"hospital": "Hospital is required."})
+        if not consultation:
+            raise serializers.ValidationError({"consultation": "Consultation is required."})
+
+        # SEC-AUD-01: Re-parenting prevention
+        # A Diagnosis must not be re-parented or moved to another hospital/consultation during update
+        if self.instance:
+            if "consultation" in attrs and attrs["consultation"] != self.instance.consultation:
+                raise serializers.ValidationError({
+                    "consultation": "Cannot change consultation reference of an existing diagnosis."
+                })
+            if "hospital" in attrs and attrs["hospital"] != self.instance.hospital:
+                raise serializers.ValidationError({
+                    "hospital": "Cannot change hospital of an existing diagnosis."
+                })
+
+        # Consistency validation
+        if consultation.hospital_id != hospital.id:
+            raise serializers.ValidationError({
+                "consultation": "Consultation does not belong to the specified hospital."
+            })
+
+        # SEC-AUD-02: Completed consultation check
+        # Reliable check using model property is_completed
+        if consultation.is_completed:
+            raise serializers.ValidationError({
+                "non_field_errors": ["Cannot add or edit diagnoses on a completed consultation."]
+            })
+
+        return attrs
+
+
+class ConsultationSerializer(serializers.ModelSerializer):
+    doctor_name = serializers.CharField(source="doctor.full_name", read_only=True)
+    patient_id = serializers.UUIDField(source="patient_visit.patient_id", read_only=True)
+    patient_name = serializers.SerializerMethodField(read_only=True)
+    patient_number = serializers.CharField(source="patient_visit.patient.patient_number", read_only=True)
+    patient_gender = serializers.CharField(source="patient_visit.patient.gender", read_only=True)
+    patient_dob = serializers.DateField(source="patient_visit.patient.date_of_birth", read_only=True)
+    diagnoses = DiagnosisSerializer(many=True, read_only=True)
+    is_completed = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = Consultation
+        fields = [
+            "id",
+            "hospital",
+            "patient_visit",
+            "patient_id",
+            "patient_name",
+            "patient_number",
+            "patient_gender",
+            "patient_dob",
+            "doctor",
+            "doctor_name",
+            "appointment",
+            "complaints",
+            "examination_notes",
+            "advice",
+            "follow_up_date",
+            "is_completed",
+            "diagnoses",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "patient_id",
+            "patient_name",
+            "patient_number",
+            "patient_gender",
+            "patient_dob",
+            "doctor_name",
+            "is_completed",
+            "diagnoses",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_patient_name(self, obj):
+        if obj.patient_visit and obj.patient_visit.patient:
+            return obj.patient_visit.patient.full_name
+        return ""
+
+    def get_is_completed(self, obj):
+        return obj.is_completed
+
+    def validate_follow_up_date(self, value):
+        if value and value < timezone.localdate():
+            raise serializers.ValidationError("Follow-up date cannot be in the past.")
+        return value
+
+    def validate(self, attrs):
+        hospital = attrs.get("hospital", getattr(self.instance, "hospital", None))
+        patient_visit = attrs.get("patient_visit", getattr(self.instance, "patient_visit", None))
+        doctor = attrs.get("doctor", getattr(self.instance, "doctor", None))
+        appointment = attrs.get("appointment", getattr(self.instance, "appointment", None))
+
+        if not hospital:
+            raise serializers.ValidationError({"hospital": "Hospital is required."})
+        if not patient_visit:
+            raise serializers.ValidationError({"patient_visit": "Patient visit is required."})
+        if not doctor:
+            raise serializers.ValidationError({"doctor": "Doctor is required."})
+
+        # Hospital consistency checks
+        if patient_visit.hospital_id != hospital.id:
+            raise serializers.ValidationError({
+                "patient_visit": "Patient visit does not belong to the selected hospital."
+            })
+        if doctor.hospital_id != hospital.id:
+            raise serializers.ValidationError({
+                "doctor": "Doctor does not belong to the selected hospital."
+            })
+        if appointment:
+            if appointment.hospital_id != hospital.id:
+                raise serializers.ValidationError({
+                    "appointment": "Appointment does not belong to the selected hospital."
+                })
+            if appointment.patient_id != patient_visit.patient_id:
+                raise serializers.ValidationError({
+                    "appointment": "Appointment patient and visit patient must match."
+                })
+
+        # Doctor active check
+        if doctor.status != Doctor.Status.ACTIVE:
+            raise serializers.ValidationError({
+                "doctor": f"Doctor status is '{doctor.status}'. Consultations can only be conducted by active doctors."
+            })
+
+        # PatientVisit status check - cannot consult cancelled visits
+        if patient_visit.status == PatientVisit.Status.CANCELLED:
+            raise serializers.ValidationError({
+                "patient_visit": "Cannot create consultation for a cancelled patient visit."
+            })
+
+        # Duplicate active consultation prevention:
+        # A PatientVisit should not have multiple consultations
+        if not self.instance:
+            existing_qs = Consultation.objects.filter(
+                hospital=hospital,
+                patient_visit=patient_visit,
+            )
+            if existing_qs.exists():
+                raise serializers.ValidationError({
+                    "patient_visit": "A consultation already exists for this patient visit."
+                })
+
+        # Completed consultation immutability
+        if self.instance and self.get_is_completed(self.instance):
+            # If consultation is completed, prevent editing clinical notes
+            non_editable_fields = ["complaints", "examination_notes", "doctor", "patient_visit", "appointment"]
+            for field in non_editable_fields:
+                if field in attrs and attrs[field] != getattr(self.instance, field):
+                    raise serializers.ValidationError({
+                        field: "Cannot modify clinical details of a completed consultation."
                     })
 
         return attrs
