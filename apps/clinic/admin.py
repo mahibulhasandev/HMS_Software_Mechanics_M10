@@ -1,6 +1,7 @@
 from django.contrib import admin
 from django.utils.html import format_html
 
+from apps.core.admin import BaseHospitalScopedAdmin
 from apps.clinic.models import (
     DoctorSchedule,
     Appointment,
@@ -9,55 +10,6 @@ from apps.clinic.models import (
     Prescription,
     PrescriptionItem,
 )
-from apps.patients.permissions import get_employee_model_and_enums
-
-
-class BaseHospitalScopedAdmin(admin.ModelAdmin):
-    """
-    Base ModelAdmin providing multi-tenant queryset scoping in Django Admin.
-    - Superusers retain unrestricted global administrative access.
-    - Staff users with approved, active Employee membership are strictly scoped
-      to their authorized hospital(s).
-    - If a user has no approved active employee record, they are prevented from
-      viewing cross-hospital records.
-    """
-
-    def get_queryset(self, request):
-        qs = super().get_queryset(request)
-        if request.user.is_superuser:
-            return qs
-
-        Employee, EmployeeRole, ApprovalStatus, EmploymentStatus = get_employee_model_and_enums()
-        if not Employee:
-            return qs
-
-        user_hospitals = Employee.objects.filter(
-            user=request.user,
-            approval_status=ApprovalStatus.APPROVED,
-            employment_status=EmploymentStatus.ACTIVE,
-        ).values_list("hospital_id", flat=True)
-
-        return qs.filter(hospital_id__in=user_hospitals)
-
-    def formfield_for_foreignkey(self, db_field, request, **kwargs):
-        """
-        Scope foreign key dropdown choices to the user's hospital(s) if not a superuser.
-        """
-        if not request.user.is_superuser:
-            Employee, EmployeeRole, ApprovalStatus, EmploymentStatus = get_employee_model_and_enums()
-            if Employee:
-                user_hospitals = Employee.objects.filter(
-                    user=request.user,
-                    approval_status=ApprovalStatus.APPROVED,
-                    employment_status=EmploymentStatus.ACTIVE,
-                ).values_list("hospital_id", flat=True)
-
-                if db_field.name == "hospital":
-                    kwargs["queryset"] = db_field.related_model.objects.filter(id__in=user_hospitals)
-                elif hasattr(db_field.related_model, "hospital"):
-                    kwargs["queryset"] = db_field.related_model.objects.filter(hospital_id__in=user_hospitals)
-
-        return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
 
 # ==============================================================================

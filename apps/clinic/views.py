@@ -19,6 +19,8 @@ from apps.clinic.permissions import (
 )
 from apps.doctors.models import Doctor
 from apps.patients.permissions import get_active_employee_for_hospital, get_employee_model_and_enums
+from apps.patients.models import PatientVisit
+from apps.patients.serializers import PatientVisitSerializer
 
 
 class DoctorScheduleViewSet(viewsets.ModelViewSet):
@@ -308,6 +310,72 @@ class AppointmentViewSet(viewsets.ModelViewSet):
                 serializer.save()
         else:
             serializer.save()
+
+    @action(detail=True, methods=["post"], url_path="check-in")
+    def check_in(self, request, pk=None):
+        """Check‑in an appointment.
+
+        Business rules enforced:
+        * Hospital context must be supplied (via X‑Hospital‑ID header or query param).
+        * Appointment must belong to the authorized hospital and patient.
+        * Only Receptionist, Hospital Admin or privileged staff may perform the action.
+        * Appointment status must be CONFIRMED.
+        * A PatientVisit is created on first check‑in; subsequent calls are idempotent.
+        * Appointment status is transitioned to CHECKED_IN.
+        """
+        user = request.user
+        hospital_id = get_hospital_id_from_request(request, self)
+        if not hospital_id:
+            raise ValidationError({"hospital": "Hospital context is required for check‑in."})
+
+        # Enforce role – Receptionist or Hospital Admin (or superuser) allowed
+        if not user.is_superuser:
+            employee = get_active_employee_for_hospital(user, hospital_id)
+            if not employee:
+                raise PermissionDenied("You are not authorized for this hospital.")
+            allowed_roles = {"receptionist", "hospital_admin", "admin"}
+            if employee.role not in allowed_roles:
+                raise PermissionDenied(f"Role '{employee.role}' cannot perform check‑in.")
+
+        # Lock the appointment row to prevent race conditions
+        try:
+            with transaction.atomic():
+                appointment = Appointment.objects.select_for_update().get(pk=pk, hospital_id=hospital_id)
+                # If already checked in, return existing data (idempotent)
+                if appointment.patient_visit:
+                    visit = appointment.patient_visit
+                    appt_serializer = AppointmentSerializer(appointment, context={"request": request})
+                    visit_serializer = PatientVisitSerializer(visit, context={"request": request})
+                    return Response({
+                        "appointment": appt_serializer.data,
+                        "patient_visit": visit_serializer.data,
+                        "detail": "Already checked in.",
+                    })
+                # Validate status - only CONFIRMED appointments can be checked in
+                if appointment.status != Appointment.Status.CONFIRMED:
+                    raise ValidationError({"status": "Only confirmed appointments can be checked in."})
+                # Create PatientVisit
+                visit = PatientVisit.objects.create(
+                    hospital=appointment.hospital,
+                    patient=appointment.patient,
+                    visit_type=PatientVisit.VisitType.OPD,
+                    visit_date=timezone.now(),
+                    status=PatientVisit.Status.REGISTERED,
+                )
+                # Link and update status
+                appointment.patient_visit = visit
+                appointment.status = Appointment.Status.CHECKED_IN
+                appointment.save()
+        except Appointment.DoesNotExist:
+            raise NotFound("Appointment not found for this hospital.")
+
+        # Serialize response
+        appt_serializer = AppointmentSerializer(appointment, context={"request": request})
+        visit_serializer = PatientVisitSerializer(visit, context={"request": request})
+        return Response({
+            "appointment": appt_serializer.data,
+            "patient_visit": visit_serializer.data,
+        }, status=status.HTTP_200_OK)
 
 
 class DoctorAvailabilityView(viewsets.ViewSet):
