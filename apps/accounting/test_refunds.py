@@ -238,15 +238,51 @@ class RefundProcessingTests(TestCase):
 
     # 10. Incomplete original payment
     def test_incomplete_original_payment_rejected(self):
-        self.original.status = "pending"
-        self.original.save(update_fields=["status"])
 
-        with self.assertRaises(ValidationError):
-            self.refund()
+        pending = Payment.objects.create(
+            hospital_id=self.original.hospital_id,
+            invoice_id=self.original.invoice_id,
+            account_id=self.original.account_id,
+            received_by_hospital_user_id=(
+                self.original.received_by_hospital_user_id
+            ),
+            amount=Decimal("500.00"),
+            method="cash",
+            kind="payment",
+            status="pending",
+            reference_no="PENDING-ORIGINAL-001",
+            paid_at=self.original.paid_at,
+        )
+
+        with self.assertRaisesMessage(
+            ValidationError,
+            "Only completed payments can be refunded.",
+        ):
+
+            self.refund(
+                original_payment_id=pending.pk
+            )
+
+        self.original.refresh_from_db()
+        pending.refresh_from_db()
 
         self.assertEqual(
-            Payment.objects.filter(kind="refund").count(),
+            self.original.status, "completed"
+        )
+
+        self.assertEqual(
+            pending.status, "pending"
+        )
+
+        self.assertEqual(
+            Payment.objects.filter(
+                kind="refund"
+            ).count(),
             0,
+        )
+
+        self.assertEqual(
+            Transaction.objects.count(), 1
         )
 
     # 11. Ledger failure must roll back refund

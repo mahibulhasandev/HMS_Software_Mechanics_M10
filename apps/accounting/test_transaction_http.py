@@ -1,4 +1,5 @@
-﻿from datetime import timedelta
+from apps.accounting._test_helpers import create_test_user
+from datetime import timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -43,24 +44,24 @@ class TransactionHTTPTests(TestCase):
 
         User = get_user_model()
 
-        cls.admin_a = User.objects.create_user(
-            username="ledger_admin_a"
+        cls.admin_a = create_test_user(
+            email='ledger_admin_a@example.test'
         )
 
-        cls.user_a = User.objects.create_user(
-            username="ledger_accountant_a"
+        cls.user_a = create_test_user(
+            email='ledger_accountant_a@example.test'
         )
 
-        cls.user_b = User.objects.create_user(
-            username="ledger_accountant_b"
+        cls.user_b = create_test_user(
+            email='ledger_accountant_b@example.test'
         )
 
-        cls.staff = User.objects.create_user(
-            username="ledger_staff"
+        cls.staff = create_test_user(
+            email='ledger_staff@example.test'
         )
 
-        cls.no_membership = User.objects.create_user(
-            username="ledger_no_membership"
+        cls.no_membership = create_test_user(
+            email='ledger_no_membership@example.test'
         )
 
         cls.hospital_a = Hospital.objects.create(
@@ -271,7 +272,7 @@ class TransactionHTTPTests(TestCase):
             self.staff,
         ):
 
-            with self.subTest(user=user.username):
+            with self.subTest(user=user.email):
 
                 self.client.force_login(user)
 
@@ -612,7 +613,7 @@ class TransactionHTTPTests(TestCase):
                 ):
 
                     with self.subTest(
-                        user=user.username,
+                        user=user.email,
                         method=method,
                         url=url,
                     ):

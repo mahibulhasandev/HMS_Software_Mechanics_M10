@@ -271,7 +271,6 @@ class ExpenseCreationTests(TestCase):
 
     # 11. Other expense statuses cannot be submitted.
     def test_non_draft_expense_rejected(self):
-        expense = create_expense(**self.expense_data())
 
         for status in [
             "pending_approval",
@@ -280,6 +279,7 @@ class ExpenseCreationTests(TestCase):
             "rejected",
         ]:
             with self.subTest(status=status):
+                expense = create_expense(**self.expense_data())
                 expense.status = status
                 expense.save(update_fields=["status"])
 
@@ -373,7 +373,6 @@ class ExpenseCreationTests(TestCase):
 
     # 16. Non-pending expenses cannot be approved.
     def test_approve_invalid_status_rejected(self):
-        expense = create_expense(**self.expense_data())
 
         for status in [
             "draft",
@@ -382,6 +381,7 @@ class ExpenseCreationTests(TestCase):
             "rejected",
         ]:
             with self.subTest(status=status):
+                expense = create_expense(**self.expense_data())
                 expense.status = status
                 expense.save(update_fields=["status"])
 
@@ -397,7 +397,6 @@ class ExpenseCreationTests(TestCase):
 
     # 17. Non-pending expenses cannot be rejected.
     def test_reject_invalid_status_rejected(self):
-        expense = create_expense(**self.expense_data())
 
         for status in [
             "draft",
@@ -406,6 +405,7 @@ class ExpenseCreationTests(TestCase):
             "rejected",
         ]:
             with self.subTest(status=status):
+                expense = create_expense(**self.expense_data())
                 expense.status = status
                 expense.save(update_fields=["status"])
 
@@ -637,46 +637,44 @@ class ExpenseCreationTests(TestCase):
     # 26. Existing ledger entry blocks duplicate payment.
     def test_existing_ledger_rejected(self):
 
+        from unittest.mock import patch
+
         expense = self._create_approved_expense()
 
-        # Create a valid posted ledger first.
-
-        expense.status = "paid"
-
-        expense.save(update_fields=["status"])
-
-        original = Transaction.objects.create(
+        original = pay_expense(
+            expense_id=expense.id,
             hospital_id=self.hospital_id,
-            account=self.account,
-            expense_category=self.category,
-            expense=expense,
-            transaction_type="expense",
-            amount=expense.amount,
-            transaction_date=timezone.localdate(),
-            description="Existing expense ledger",
         )
-
-        # Simulate a corrupted source status for
-        # defensive service validation only.
-
-        expense.status = "approved"
-
-        expense.save(update_fields=["status"])
-
-        with self.assertRaisesMessage(
-            ValidationError,
-            "This expense already has a ledger entry.",
-        ):
-
-            pay_expense(
-                expense_id=expense.id,
-                hospital_id=self.hospital_id,
-            )
 
         expense.refresh_from_db()
 
-        self.assertEqual(expense.status, "approved")
+        self.assertEqual(expense.status, "paid")
 
+        # Simulate a corrupted in-memory source.
+        # The database record remains protected.
+
+        expense.status = "approved"
+
+        with patch.object(
+            type(expense).objects,
+            "select_for_update",
+        ) as locked:
+
+            locked.return_value.get.return_value = expense
+
+            with self.assertRaisesMessage(
+                ValidationError,
+                "This expense already has a ledger entry.",
+            ):
+
+                pay_expense(
+                    expense_id=expense.id,
+                    hospital_id=self.hospital_id,
+                )
+
+        expense.refresh_from_db()
+
+        self.assertEqual(expense.status, "paid")
         self.assertEqual(Transaction.objects.count(), 1)
 
         self.assertTrue(

@@ -1,3 +1,4 @@
+from apps.accounting._test_helpers import create_test_user
 from base64 import b64encode
 
 from django.contrib.auth import get_user_model
@@ -37,17 +38,21 @@ class AccountingHTTPTests(TestCase):
         )
 
         User = get_user_model()
-        cls.user_a = User.objects.create_user(
-            username="http_accountant_a", password="test-pass-a"
+        cls.user_a = create_test_user(
+            email="http_accountant_a@example.test",
+            password="test-pass-a",
         )
-        cls.user_b = User.objects.create_user(
-            username="http_accountant_b", password="test-pass-b"
+        cls.user_b = create_test_user(
+            email="http_accountant_b@example.test",
+            password="test-pass-b",
         )
-        cls.staff = User.objects.create_user(
-            username="http_staff", password="test-pass-staff"
+        cls.staff = create_test_user(
+            email="http_staff@example.test",
+            password="test-pass-staff",
         )
-        cls.no_membership = User.objects.create_user(
-            username="http_no_membership"
+        cls.no_membership = create_test_user(
+            email="http_no_membership@example.test",
+            password="test-pass-no-membership",
         )
 
         for user, hospital, role in (
@@ -296,7 +301,7 @@ class AccountingHTTPTests(TestCase):
                 ("income-categories", "income_categories"),
                 ("expense-categories", "expense_categories"),
             ):
-                with self.subTest(user=user.username, path=path):
+                with self.subTest(user=user.email, path=path):
                     response = self.client.get(
                         f"/api/accounting/{path}/",
                         {"hospital_id": str(self.hospital_b.pk)},

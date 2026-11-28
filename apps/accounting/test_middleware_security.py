@@ -1,3 +1,4 @@
+from apps.accounting._test_helpers import create_test_user
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
 from django.db import DatabaseError, connection, transaction
@@ -26,8 +27,8 @@ class AccountingMiddlewareSecurityTests(TestCase):
 
     def setUp(self):
         self.factory = RequestFactory()
-        self.user = get_user_model().objects.create_user(
-            username="security_accountant",
+        self.user = create_test_user(
+            email='security_accountant@example.test',
             password="test-password-only",
         )
 
@@ -83,8 +84,8 @@ class AccountingMiddlewareSecurityTests(TestCase):
             is_active=True,
         )
 
-        other_user = get_user_model().objects.create_user(
-            username="security_other_accountant",
+        other_user = create_test_user(
+            email='security_other_accountant@example.test',
             password="test-password-only",
         )
 

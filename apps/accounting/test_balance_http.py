@@ -402,7 +402,7 @@ class BalanceHTTPTests(TestCase):
             self.staff,
         ):
 
-            with self.subTest(user=user.username):
+            with self.subTest(user=user.email):
 
                 data = self.get_balance(
                     self.account_a,
@@ -551,7 +551,7 @@ class BalanceHTTPTests(TestCase):
                 ):
 
                     with self.subTest(
-                        user=user.username,
+                        user=user.email,
                         method=method,
                         url=url,
                     ):

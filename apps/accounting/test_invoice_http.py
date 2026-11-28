@@ -1,3 +1,4 @@
+from apps.accounting._test_helpers import create_test_user
 from decimal import Decimal
 from uuid import uuid4
 
@@ -53,17 +54,17 @@ class InvoiceListHTTPTests(TestCase):
 
         User = get_user_model()
 
-        cls.user_a = User.objects.create_user(
-            username="invoice_accountant_a"
+        cls.user_a = create_test_user(
+            email='invoice_accountant_a@example.test'
         )
-        cls.user_b = User.objects.create_user(
-            username="invoice_accountant_b"
+        cls.user_b = create_test_user(
+            email='invoice_accountant_b@example.test'
         )
-        cls.staff = User.objects.create_user(
-            username="invoice_staff"
+        cls.staff = create_test_user(
+            email='invoice_staff@example.test'
         )
-        cls.no_membership = User.objects.create_user(
-            username="invoice_no_membership"
+        cls.no_membership = create_test_user(
+            email='invoice_no_membership@example.test'
         )
 
         for user, hospital, role in (
@@ -325,7 +326,7 @@ class InvoiceListHTTPTests(TestCase):
             (self.user_a, self.hospital_a, "NEW-INV-A"),
             (self.user_b, self.hospital_b, "NEW-INV-B"),
         ):
-            with self.subTest(user=user.username):
+            with self.subTest(user=user.email):
                 self.client.force_login(user)
 
                 response = self.client.post(

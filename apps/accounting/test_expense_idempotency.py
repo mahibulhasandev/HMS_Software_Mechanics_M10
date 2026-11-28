@@ -1,3 +1,4 @@
+from apps.accounting._test_helpers import create_test_user
 import json
 
 from concurrent.futures import ThreadPoolExecutor
@@ -63,9 +64,10 @@ def prepare_fixtures(target):
             timezone="Asia/Dhaka",
         )
 
-        user = get_user_model().objects.create_user(
-            username=f"idem_accountant_{suffix}"
-        )
+        user = create_test_user(
+
+    email=f"idem_accountant_{suffix}@example.test",
+)
 
         AccountingMembership.objects.create(
             user=user,
@@ -95,9 +97,10 @@ def prepare_fixtures(target):
 
     for role in ("admin", "staff"):
 
-        user = get_user_model().objects.create_user(
-            username=f"idem_{role}"
-        )
+        user = create_test_user(
+
+    email=f"idem_{role}@example.test",
+)
 
         AccountingMembership.objects.create(
             user=user,
@@ -109,8 +112,9 @@ def prepare_fixtures(target):
         setattr(target, role, user)
 
     target.no_membership = (
-        get_user_model().objects.create_user(
-            username="idem_no_membership"
+        create_test_user(
+
+            email="idem_no_membership@example.test",
         )
     )
 

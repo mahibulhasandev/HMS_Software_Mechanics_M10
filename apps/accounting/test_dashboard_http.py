@@ -1,3 +1,4 @@
+from apps.accounting._test_helpers import create_test_user
 from datetime import timedelta
 from decimal import Decimal
 from uuid import uuid4
@@ -406,7 +407,7 @@ class DashboardHTTPTests(TestCase):
             self.staff,
         ):
 
-            with self.subTest(user=user.username):
+            with self.subTest(user=user.email):
 
                 data = self.get_dashboard(user=user)
 
@@ -590,7 +591,7 @@ class DashboardHTTPTests(TestCase):
             ):
 
                 with self.subTest(
-                    user=user.username,
+                    user=user.email,
                     method=method,
                 ):
 
@@ -654,9 +655,10 @@ class DashboardHTTPTests(TestCase):
             timezone="Asia/Dhaka",
         )
 
-        user = get_user_model().objects.create_user(
-            username="empty_dashboard_user"
-        )
+        user = create_test_user(
+
+    email="empty_dashboard_user@example.test",
+)
 
         AccountingMembership.objects.create(
             user=user,

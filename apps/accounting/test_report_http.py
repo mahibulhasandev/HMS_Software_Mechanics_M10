@@ -429,7 +429,7 @@ class FinancialReportHTTPTests(TestCase):
             self.staff,
         ):
 
-            with self.subTest(user=user.username):
+            with self.subTest(user=user.email):
 
                 data = self.get_report(
                     user=user
@@ -493,7 +493,7 @@ class FinancialReportHTTPTests(TestCase):
             ):
 
                 with self.subTest(
-                    user=user.username,
+                    user=user.email,
                     method=method,
                 ):
 

@@ -1,3 +1,4 @@
+from apps.accounting._test_helpers import create_test_user
 from decimal import Decimal
 from uuid import uuid4
 
@@ -47,24 +48,24 @@ class ExpenseHTTPTests(TestCase):
 
         User = get_user_model()
 
-        cls.user_a = User.objects.create_user(
-            username="expense_accountant_a"
+        cls.user_a = create_test_user(
+            email="expense_accountant_a@example.test",
         )
 
-        cls.user_b = User.objects.create_user(
-            username="expense_accountant_b"
+        cls.user_b = create_test_user(
+            email="expense_accountant_b@example.test",
         )
 
-        cls.admin_a = User.objects.create_user(
-            username="expense_admin_a"
+        cls.admin_a = create_test_user(
+            email="expense_admin_a@example.test",
         )
 
-        cls.staff = User.objects.create_user(
-            username="expense_staff"
+        cls.staff = create_test_user(
+            email="expense_staff@example.test",
         )
 
-        cls.no_membership = User.objects.create_user(
-            username="expense_no_membership"
+        cls.no_membership = create_test_user(
+            email="expense_no_membership@example.test",
         )
 
         cls.hospital_a = Hospital.objects.create(
@@ -72,7 +73,7 @@ class ExpenseHTTPTests(TestCase):
             registration_number="EXP-HOSP-A",
             address="Address A",
             phone="100001",
-            email="expensea@example.com",
+            email="expense_accountant_a@example.test",
             timezone="Asia/Dhaka",
         )
 
@@ -81,7 +82,7 @@ class ExpenseHTTPTests(TestCase):
             registration_number="EXP-HOSP-B",
             address="Address B",
             phone="100002",
-            email="expenseb@example.com",
+            email="expense_accountant_b@example.test",
             timezone="Asia/Dhaka",
         )
 
@@ -288,7 +289,6 @@ class ExpenseHTTPTests(TestCase):
         original = Transaction.objects.get(
             expense_id=expense_id
         )
-
         response = self.action(
             self.admin_a,
             expense_id,
@@ -579,7 +579,7 @@ class ExpenseHTTPTests(TestCase):
 
         for user in (self.admin_a, self.user_a, self.staff):
 
-            with self.subTest(user=user.username):
+            with self.subTest(user=str(user.pk)):
 
                 self.client.force_login(user)
 

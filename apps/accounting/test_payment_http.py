@@ -1,3 +1,4 @@
+from apps.accounting._test_helpers import create_test_user
 from decimal import Decimal
 from uuid import uuid4
 
@@ -34,11 +35,11 @@ class PaymentRefundHTTPTests(TestCase):
 
         User = get_user_model()
 
-        cls.user_a = User.objects.create_user(username="payment_user_a")
-        cls.user_b = User.objects.create_user(username="payment_user_b")
-        cls.staff = User.objects.create_user(username="payment_staff")
-        cls.no_membership = User.objects.create_user(
-            username="payment_no_membership"
+        cls.user_a = create_test_user(email='payment_user_a@example.test')
+        cls.user_b = create_test_user(email='payment_user_b@example.test')
+        cls.staff = create_test_user(email='payment_staff@example.test')
+        cls.no_membership = create_test_user(
+            email='payment_no_membership@example.test'
         )
 
         cls.hospital_a = Hospital.objects.create(
