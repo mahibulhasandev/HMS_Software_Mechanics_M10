@@ -1,9 +1,10 @@
 from django.contrib import admin
+from apps.core.admin import BaseHospitalScopedAdmin
 from .models import Patient, PatientVisit
 
 
 @admin.register(Patient)
-class PatientAdmin(admin.ModelAdmin):
+class PatientAdmin(BaseHospitalScopedAdmin):
     list_display = (
         "patient_number",
         "first_name",
@@ -26,7 +27,7 @@ class PatientAdmin(admin.ModelAdmin):
 
 
 @admin.register(PatientVisit)
-class PatientVisitAdmin(admin.ModelAdmin):
+class PatientVisitAdmin(BaseHospitalScopedAdmin):
     list_display = (
         "visit_number",
         "patient",

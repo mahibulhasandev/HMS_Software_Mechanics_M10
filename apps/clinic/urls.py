@@ -5,11 +5,15 @@ from apps.clinic.views import (
     DoctorScheduleViewSet,
     AppointmentViewSet,
     DoctorAvailabilityView,
+    ConsultationViewSet,
+    DiagnosisViewSet,
 )
 
 router = DefaultRouter()
 router.register(r"clinic/schedules", DoctorScheduleViewSet, basename="clinic-schedule")
 router.register(r"clinic/appointments", AppointmentViewSet, basename="clinic-appointment")
+router.register(r"clinic/consultations", ConsultationViewSet, basename="clinic-consultation")
+router.register(r"clinic/diagnoses", DiagnosisViewSet, basename="clinic-diagnosis")
 
 urlpatterns = [
     path(

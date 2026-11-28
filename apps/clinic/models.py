@@ -237,6 +237,19 @@ class Consultation(models.Model):
             if self.appointment.patient_id != self.patient_visit.patient_id:
                 raise ValidationError("Appointment and visit patient must match.")
 
+    @property
+    def is_completed(self):
+        """
+        Reliable completion-state check:
+        A consultation is completed if either its linked appointment or patient visit is COMPLETED.
+        Handles walk-in consultations where appointment is None.
+        """
+        if self.appointment_id and self.appointment.status == Appointment.Status.COMPLETED:
+            return True
+        if self.patient_visit_id and self.patient_visit.status == "completed":
+            return True
+        return False
+
     def __str__(self):
         return f"Consultation - {self.patient_visit}"
 
