@@ -1,6 +1,8 @@
+from uuid import uuid4
 
 import uuid
 from django.db import models
+from django.conf import settings
 
 
 # ============================================================
@@ -173,6 +175,38 @@ class Invoice(HospitalOwnedModel):
                     & models.Q(amount_paid__gte=0)
                 ),
                 name="ck_invoice_amounts_nonnegative"
+            ),
+            models.CheckConstraint(
+                condition=models.Q(
+                    total=models.F("subtotal") - models.F("discount")
+                ),
+                name="ck_invoice_total_calculation",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(
+                    amount_paid__lte=models.F("total")
+                ),
+                name="ck_invoice_payment_limit",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        status__in=["draft", "issued", "voided"],
+                        amount_paid=0,
+                    )
+                    |
+                    models.Q(
+                        status="paid",
+                        amount_paid=models.F("total"),
+                    )
+                    |
+                    models.Q(
+                        status="partially_paid",
+                        amount_paid__gt=0,
+                        amount_paid__lt=models.F("total"),
+                    )
+                ),
+                name="ck_invoice_payment_status",
             ),
         ]
 
@@ -468,6 +502,26 @@ class Payment(HospitalOwnedModel):
                 ),
                 name="ck_payment_refund_reference"
             ),
+            models.UniqueConstraint(
+                fields=[
+                    "hospital_id",
+                    "kind",
+                    "method",
+                    "reference_no",
+                ],
+                condition=(
+                    models.Q(status="completed")
+                    & models.Q(
+                        method__in=[
+                            "card",
+                            "bank_transfer",
+                            "mobile_wallet",
+                        ]
+                    )
+                    & ~models.Q(reference_no="")
+                ),
+                name="uq_payment_completed_external_ref",
+            ),
         ]
 
     def __str__(self):
@@ -484,6 +538,7 @@ class ExpenseStatus(models.TextChoices):
     APPROVED = "approved", "Approved"
     PAID = "paid", "Paid"
     REJECTED = "rejected", "Rejected"
+    REVERSED = "reversed", "Reversed"
 
 
 class Expense(HospitalOwnedModel):
@@ -519,6 +574,19 @@ class Expense(HospitalOwnedModel):
         choices=ExpenseStatus.choices
     )
 
+    idempotency_key = models.UUIDField(
+        null=True,
+        blank=True,
+        editable=False,
+    )
+
+    request_fingerprint = models.CharField(
+        max_length=64,
+        null=True,
+        blank=True,
+        editable=False,
+    )
+
     class Meta:
         db_table = "expenses"
         constraints = [
@@ -537,6 +605,24 @@ class Expense(HospitalOwnedModel):
                     status__in=ExpenseStatus.values
                 ),
                 name="ck_expense_status_valid"
+            ),
+            models.UniqueConstraint(
+                fields=["hospital_id", "idempotency_key"],
+                name="uq_expense_hospital_idem_key",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        idempotency_key__isnull=True,
+                        request_fingerprint__isnull=True,
+                    )
+                    |
+                    models.Q(
+                        idempotency_key__isnull=False,
+                        request_fingerprint__isnull=False,
+                    )
+                ),
+                name="ck_expense_idem_fields_pair",
             ),
         ]
 
@@ -697,3 +783,58 @@ class Transaction(HospitalOwnedModel):
 
     def __str__(self):
         return f"{self.transaction_type}: {self.amount}"
+# ============================================================
+# 9. ACCOUNTING MEMBERSHIP
+# ============================================================
+
+
+class AccountingMembership(models.Model):
+
+    class Role(models.TextChoices):
+        ADMIN = "admin", "Admin"
+        ACCOUNTANT = "accountant", "Accountant"
+        STAFF = "staff", "Staff"
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="accounting_membership_record",
+    )
+
+    hospital = models.ForeignKey(
+        "hospitals.Hospital",
+        on_delete=models.PROTECT,
+        related_name="accounting_memberships",
+    )
+
+    role = models.CharField(
+        max_length=20,
+        choices=Role.choices,
+    )
+
+    is_active = models.BooleanField(default=True)
+
+    actor_uuid = models.UUIDField(
+        default=uuid4,
+        unique=True,
+        editable=False,
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "accounting_memberships"
+
+        indexes = [
+            models.Index(
+                fields=["hospital", "is_active"],
+                name="ix_acct_mem_hosp_active",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.user_id} - "
+            f"{self.hospital_id} - "
+            f"{self.role}"
+        )
